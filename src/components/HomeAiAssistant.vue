@@ -1,0 +1,404 @@
+<script setup>
+import { nextTick, ref, watch } from 'vue'
+import axios from 'axios'
+
+const expanded = ref(true)
+const mountedPop = ref(true)
+const input = ref('')
+const loading = ref(false)
+const errorMsg = ref('')
+const listRef = ref(null)
+
+const messages = ref([
+  {
+    role: 'assistant',
+    content:
+      '你好！我是策算学堂首页 AI 向导，可以介绍站内功能、学习路径或贪心算法入门——输入问题即可。',
+  },
+])
+
+watch(
+  messages,
+  async () => {
+    await nextTick()
+    const el = listRef.value
+    if (el) el.scrollTop = el.scrollHeight
+  },
+  { deep: true }
+)
+
+function toggle() {
+  expanded.value = !expanded.value
+}
+
+function onEntered() {
+  window.setTimeout(() => {
+    mountedPop.value = false
+  }, 520)
+}
+
+async function send() {
+  const text = input.value.trim()
+  if (!text || loading.value) return
+
+  errorMsg.value = ''
+  messages.value.push({ role: 'user', content: text })
+  input.value = ''
+  loading.value = true
+
+  try {
+    const payload = {
+      messages: messages.value.map((m) => ({ role: m.role, content: m.content })),
+    }
+    const resp = await axios.post('/api/ai/home', payload)
+    const reply = resp.data?.reply ?? '（无返回内容）'
+    messages.value.push({ role: 'assistant', content: reply })
+  } catch (e) {
+    const msg =
+      e?.response?.data?.message ??
+      e?.message ??
+      '请求失败。请确认已在本目录运行 node server/index.js（首页 AI 走 /api 代理）。'
+    errorMsg.value = msg
+    messages.value.push({
+      role: 'assistant',
+      content: `抱歉，这次没连上后端或模型：${msg}`,
+    })
+  } finally {
+    loading.value = false
+  }
+}
+
+function onKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    send()
+  }
+}
+</script>
+
+<template>
+  <div
+    class="home-ai"
+    :class="{ 'home-ai--collapsed': !expanded, 'home-ai--enter': mountedPop && expanded }"
+    role="complementary"
+    aria-label="首页 AI 学习向导"
+    @animationend="onEntered"
+  >
+    <button
+      v-if="!expanded"
+      type="button"
+      class="home-ai-tab"
+      aria-expanded="false"
+      @click="toggle"
+    >
+      <span class="home-ai-tab-text">AI</span>
+    </button>
+
+    <div v-else class="home-ai-panel">
+      <div class="home-ai-head">
+        <div class="home-ai-title">
+          <span class="home-ai-dot" aria-hidden="true" />
+          AI 学习向导
+        </div>
+        <button type="button" class="home-ai-close" aria-label="收起面板" @click="toggle">收起</button>
+      </div>
+
+      <div ref="listRef" class="home-ai-messages" role="log" aria-live="polite">
+        <div
+          v-for="(m, idx) in messages"
+          :key="idx"
+          class="home-ai-msg"
+          :class="m.role === 'user' ? 'is-user' : 'is-ai'"
+        >
+          <div class="home-ai-msg-label">{{ m.role === 'user' ? '你' : 'AI' }}</div>
+          <div class="home-ai-msg-body">{{ m.content }}</div>
+        </div>
+        <div v-if="loading" class="home-ai-msg is-ai home-ai-thinking">正在回复…</div>
+      </div>
+
+      <div v-if="errorMsg" class="home-ai-err">{{ errorMsg }}</div>
+
+      <div class="home-ai-input-row">
+        <textarea
+          v-model="input"
+          class="home-ai-input"
+          rows="2"
+          placeholder="问一问站内功能、贪心算法…"
+          :disabled="loading"
+          @keydown="onKeydown"
+        />
+        <button type="button" class="home-ai-send" :disabled="loading || !input.trim()" @click="send">
+          发送
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.home-ai {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+
+.home-ai > * {
+  pointer-events: auto;
+}
+
+.home-ai--enter.home-ai {
+  animation: homeAiSlideIn 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes homeAiSlideIn {
+  from {
+    transform: translate(100%, -50%);
+    opacity: 0.35;
+  }
+  to {
+    transform: translate(0, -50%);
+    opacity: 1;
+  }
+}
+
+.home-ai--collapsed {
+  transform: translateY(-50%);
+}
+
+.home-ai-tab {
+  border: 1px solid rgba(26, 47, 90, 0.22);
+  border-right: none;
+  border-radius: 12px 0 0 12px;
+  background: linear-gradient(180deg, #1a2f5a 0%, #243e6d 100%);
+  color: #fff;
+  padding: 18px 10px;
+  cursor: pointer;
+  box-shadow: -4px 6px 24px rgba(26, 47, 90, 0.25);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.home-ai-tab:hover {
+  filter: brightness(1.06);
+}
+
+.home-ai-tab-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 14px;
+}
+
+.home-ai-panel {
+  width: min(380px, calc(100vw - 28px));
+  max-height: min(560px, calc(100vh - 120px));
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(16px) saturate(1.15);
+  overflow: hidden;
+}
+
+:global(.dark) .home-ai-panel {
+  background: rgba(22, 23, 29, 0.94);
+}
+
+.home-ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--brand-bg-subtle);
+}
+
+:global(.dark) .home-ai-head {
+  border-bottom-color: rgba(46, 48, 58, 0.95);
+  background: rgba(26, 47, 90, 0.12);
+}
+
+.home-ai-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 900;
+  color: var(--text-h);
+  font-size: 14px;
+}
+
+.home-ai-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f5a623;
+  box-shadow: 0 0 0 3px rgba(245, 166, 35, 0.25);
+}
+
+.home-ai-close {
+  border: 1px solid rgba(26, 47, 90, 0.14);
+  background: rgba(255, 255, 255, 0.85);
+  color: var(--text-h);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.home-ai-close:hover {
+  background: rgba(245, 166, 35, 0.15);
+  border-color: rgba(245, 166, 35, 0.35);
+}
+
+.home-ai-messages {
+  flex: 1;
+  min-height: 200px;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.home-ai-msg {
+  border-radius: 12px;
+  padding: 10px 11px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.home-ai-msg-label {
+  font-size: 11px;
+  font-weight: 800;
+  margin-bottom: 4px;
+  opacity: 0.72;
+}
+
+.is-user {
+  align-self: flex-end;
+  max-width: 92%;
+  background: rgba(26, 47, 90, 0.08);
+  border: 1px solid rgba(26, 47, 90, 0.12);
+}
+
+.is-ai {
+  align-self: stretch;
+  background: rgba(245, 166, 35, 0.08);
+  border: 1px solid rgba(245, 166, 35, 0.22);
+}
+
+.home-ai-msg-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+.home-ai-thinking {
+  opacity: 0.85;
+  font-style: italic;
+}
+
+.home-ai-err {
+  font-size: 12px;
+  color: #b42318;
+  padding: 0 14px 4px;
+}
+
+.home-ai-input-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(229, 228, 231, 0.9);
+  align-items: end;
+}
+
+:global(.dark) .home-ai-input-row {
+  border-top-color: rgba(46, 48, 58, 0.95);
+}
+
+.home-ai-input {
+  resize: none;
+  border-radius: 12px;
+  border: 1px solid rgba(229, 228, 231, 1);
+  padding: 10px 11px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  background: rgba(255, 255, 255, 0.95);
+  color: var(--text);
+}
+
+:global(.dark) .home-ai-input {
+  background: rgba(13, 17, 23, 0.88);
+  border-color: rgba(46, 48, 58, 0.95);
+}
+
+.home-ai-send {
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: none;
+  background: #1a2f5a;
+  color: #fff;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.home-ai-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 520px) {
+  .home-ai {
+    top: auto;
+    bottom: 0;
+    transform: none;
+    align-items: flex-end;
+  }
+
+  .home-ai--enter.home-ai {
+    animation: homeAiSlideUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  @keyframes homeAiSlideUp {
+    from {
+      transform: translateY(110%);
+      opacity: 0.35;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .home-ai-panel {
+    width: 100vw;
+    max-height: min(70vh, 520px);
+    border-radius: 16px 16px 0 0;
+    border: 1px solid rgba(229, 228, 231, 0.95);
+    border-bottom: none;
+  }
+
+  .home-ai-tab {
+    border-radius: 12px 12px 0 0;
+    border: 1px solid rgba(26, 47, 90, 0.22);
+    border-bottom: none;
+    padding: 10px 20px;
+  }
+
+  .home-ai-tab-text {
+    writing-mode: horizontal-tb;
+  }
+}
+</style>

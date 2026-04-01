@@ -1,0 +1,155 @@
+[
+  {
+    "id": "tianji-qiwei",
+    "title": "田忌赛马的算法密码：从古代兵法到贪心策略",
+    "englishTitle": "StratAlgo: TianJi's Horse Racing",
+    "summary": "用故事讲透贪心策略，用可调仿真把“最优出场顺序”可视化。",
+    "difficulty": "入门",
+    "timeMinutes": 12,
+    "audience": "已学 C 语言的大学生；对算法感兴趣的编程初学者",
+    "knowledgeTags": ["贪心算法", "双指针", "排序", "C语言", "算法思维"],
+    "videoUrl": "/videos/116cc8a9afc0e22415e1952d1962fa60.mp4",
+    "videoChapters": [
+      { "t": "0:00", "label": "故事导入" },
+      { "t": "2:30", "label": "问题建模" },
+      { "t": "5:00", "label": "贪心策略分析" },
+      { "t": "8:00", "label": "C 语言代码实现" },
+      { "t": "11:00", "label": "复杂度分析" }
+    ],
+    "learningObjectives": {
+      "algorithmConcept": "理解田忌赛马的贪心建模思想（双指针）。",
+      "knowledge": "掌握排序、双指针与贪心决策的基本流程。",
+      "ability": "能用贪心策略推导最优出场顺序并实现代码。",
+      "literacy": "形成“可视化验证 + 反思优化”的算法学习习惯。"
+    },
+    "simulation": {
+      "maxHorses": 5,
+      "defaultHorses": 3,
+      "classicN": 3,
+      "classicTianji": [90, 85, 70],
+      "classicQi": [95, 88, 75]
+    },
+    "teachingDesign": {
+      "studentProfile": "受众为已学习 C 语言的大学生，具备数组、排序、复杂度的基础认识。",
+      "objectives": {
+        "algorithmConcept": "算法概念：贪心策略与双指针决策。",
+        "knowledge": "知识目标：输入输出建模、实现流程与复杂度分析。",
+        "ability": "能力目标：能复述策略、迁移到变体并实现求解。",
+        "literacy": "素养目标：形成基于证据的算法论证与可视化验证意识。"
+      },
+      "keyDifficult": {
+        "key": "贪心策略的理解与 C 语言实现。",
+        "difficult": "策略最优性的解释与迁移。"
+      },
+      "methods": ["案例导入法", "启发式问题链", "对比分析", "可视化演示", "代码讲解"],
+      "flow": [
+        "故事导入",
+        "问题建模",
+        "贪心策略",
+        "代码实现",
+        "复杂度分析",
+        "练习巩固"
+      ],
+      "aiTools": ["万彩动画大师（动画制作）", "Python Manim（后续可扩展）"]
+    },
+    "materials": {
+      "teachingDocDownload": "",
+      "slidesDownload": "",
+      "codeExample": "/* 田忌赛马 · 贪心（本页示例，可与「虚拟仿真」对照理解）\n * 规则：胜 +200 银币，负 -200，平 0；战力强者胜。\n * 思路：排序后双指针决策（与站点仿真实验一致）。\n */\n#include <stdio.h>\n#include <stdlib.h>\n\nint cmp(const void *a, const void *b) {\n  return *(const int*)a - *(const int*)b;\n}\n\nint main(void) {\n  int n;\n  if (scanf(\"%d\", &n) != 1 || n <= 0) return 0;\n  /* TODO: 读入田忌、齐王各 n 匹马的战力到数组 */\n  /* TODO: qsort 升序排序后，用双指针模拟每一轮出牌 */\n  /* TODO: 输出最大银币（整数一行） */\n  printf(\"0\\n\");\n  return 0;\n}\n",
+      "pseudocode": [
+        "对田忌和齐王马按战力升序排序",
+        "双指针从两端比较：尽量让差的去换差的，用赢的换赢的",
+        "记录每次决策形成步骤回放",
+        "累加银币并输出最优顺序"
+      ],
+      "referenceLinks": [
+        { "label": "洛谷 P1650", "url": "https://www.luogu.com.cn/problem/P1650" },
+        { "label": "杭电 ACM · 贪心资料（搜索课程讲义）", "url": "https://acm.hdu.edu.cn/" }
+      ]
+    },
+    "exercise": {
+      "title": "改编自洛谷 P1650：田忌赛马（贪心）",
+      "problemStatement": "本题与站内「虚拟仿真」同一套计分规则：胜一场 +200 银币，负一场 -200，平 0。马匹战力大的一方获胜。\n\n输入格式：第一行整数 n（1≤n≤1000），第二行 n 个整数为田忌 n 匹马的战力，第三行 n 个整数为齐王 n 匹马的战力。\n\n输出格式：一行一个整数，表示田忌在最优策略下能获得的最大银币总和。\n\n说明：请使用 64 位整数累计答案以防溢出；本页判题使用与后端一致的 stdin 格式与期望输出。",
+      "language": "c",
+      "defaultCode": "#include <stdio.h>\n#include <stdlib.h>\n\nint cmp(const void *a, const void *b) {\n  long x = *(const long *)a, y = *(const long *)b;\n  return (x > y) - (x < y);\n}\n\nint main(void) {\n  int n;\n  if (scanf(\"%d\", &n) != 1 || n <= 0) return 0;\n  long t[1024], q[1024];\n  for (int i = 0; i < n; i++) scanf(\"%ld\", &t[i]);\n  for (int i = 0; i < n; i++) scanf(\"%ld\", &q[i]);\n  qsort(t, (size_t)n, sizeof(t[0]), cmp);\n  qsort(q, (size_t)n, sizeof(q[0]), cmp);\n  int i = 0, j = n - 1, k = 0, l = n - 1;\n  long long money = 0;\n  for (int r = 0; r < n; r++) {\n    if (t[j] > q[l]) { money += 200; j--; l--; }\n    else if (t[i] > q[k]) { money += 200; i++; k++; }\n    else {\n      if (t[i] < q[k]) money -= 200;\n      i++; k++;\n    }\n  }\n  printf(\"%lld\\n\", money);\n  return 0;\n}\n",
+      "expansionChallenges": [
+        {
+          "title": "变体一：马匹数量扩展到 5 匹",
+          "prompt": "在战力可比较且仍采用「胜 +200 / 负 -200」规则时，排序 + 双指针贪心对任意 n 仍有效。你可尝试在「虚拟仿真」中切换到 5 匹观察步骤回放是否与代码决策一致。"
+        },
+        {
+          "title": "变体二：胜利阈值规则",
+          "prompt": "若规定「只有战力差距超过 10 才算胜利」，贪心策略需重新设计：不再能用本题的固定双指针模板，需回到问题建模并验证局部最优性质。可作为课堂讨论拓展。"
+        }
+      ],
+      "conceptQuiz": {
+        "singleChoice": [
+          {
+            "q": "在本课语境下，贪心策略的核心含义是？",
+            "options": ["穷举所有出牌顺序再选最优", "每一步在约束下做当前最有利的决策，并依赖问题结构保证全局最优", "完全随机出牌寄希望对手失误"],
+            "answerIndex": 1,
+            "explain": "贪心是在可证明（或可经验验证）的前提下，用局部最优步骤构造全局最优；田忌赛马在排序后具有可递推的最优子结构。"
+          },
+          {
+            "q": "排序后，若田忌当前最强马能战胜齐王最强马，最优策略通常应当？",
+            "options": ["用最强对最强赢下这一轮", "用最弱去对齐王最强故意输掉", "随机选择一匹马出场"],
+            "answerIndex": 0,
+            "explain": "能赢则赢：用己方最强对齐方最强，可立即获得 +200 且不误伤更弱的有效战力。"
+          },
+          {
+            "q": "本题的「双指针」主要配合哪一步？",
+            "options": ["只对数组做一次遍历找最大值", "在已排序数组上维护最弱与最强的下标，逐轮更新", "用两个指针分别指向两台电脑"],
+            "answerIndex": 1,
+            "explain": "排序后同时观察两端（或弱端对齐），根据比较结果收缩区间，线性完成 n 轮决策。"
+          },
+          {
+            "q": "若仅实现决策逻辑、使用通用 O(n log n) 排序算法，整体时间复杂度通常是？",
+            "options": ["O(n²)", "O(n log n)", "O(2ⁿ)"],
+            "answerIndex": 1,
+            "explain": "排序主导复杂度为 O(n log n)，后续双指针是 O(n)。"
+          },
+          {
+            "q": "下列哪类问题**通常不适合**直接套用本题的固定贪心模板？",
+            "options": ["需排序后逐轮比较的零和博弈得分最大化", "马匹速度随机且胜负仅取决于是否严格大于对手", "带「必须间隔一回合才能再次出场」等额外约束的指派问题"],
+            "answerIndex": 2,
+            "explain": "额外约束会破坏本题所依赖的决策顺序与最优子结构，需要重新建模（可能用 DP 或别的策略）。"
+          }
+        ],
+        "trueFalse": [
+          {
+            "q": "在本题规则下，将双方马力排序后按「仿真实验」中的双指针流程决策，能得到最大银币。",
+            "answer": true,
+            "explain": "该流程与经典田忌赛马贪心一致；也可用站内仿真与判题用例交叉验证。"
+          },
+          {
+            "q": "对任何组合优化问题，贪心一定能得到全局最优解。",
+            "answer": false,
+            "explain": "贪心成立依赖问题特性；若最优子结构或交换论证不成立，贪心可能只能得到近似或失败。"
+          },
+          {
+            "q": "本题在实现时应用 long long 累加银币，主要是为了避免中间结果溢出。",
+            "answer": true,
+            "explain": "n 较大时累计分值可能超出 32 位整型范围。"
+          }
+        ]
+      }
+    },
+    "studentFeedback": {
+      "cards": [
+        { "id": "A", "summary": "可视化演示很直观，贪心逻辑更容易懂。", "tags": ["直观", "清晰"], "sentiment": "正面" },
+        { "id": "B", "summary": "动画和步骤回放帮助我复盘决策过程。", "tags": ["动画", "回放"], "sentiment": "正面" },
+        { "id": "C", "summary": "希望增加更多变体练习，巩固迁移能力。", "tags": ["变体", "巩固"], "sentiment": "建议" },
+        { "id": "D", "summary": "章节目录分段清晰，学习时很好定位关键节点。", "tags": ["结构化", "定位"], "sentiment": "正面" },
+        { "id": "E", "summary": "代码讲解较细，能把思路落到实现。", "tags": ["代码", "细节"], "sentiment": "正面" },
+        { "id": "F", "summary": "虚拟仿真可调参数很有趣，能快速验证策略直觉。", "tags": ["互动", "可调参"], "sentiment": "正面" },
+        { "id": "G", "summary": "AI 提示对卡住的同学很友好，能给出方向。", "tags": ["AI提示", "方向"], "sentiment": "正面" },
+        { "id": "H", "summary": "如果能加入更多“反例观察”，会更容易形成证明感。", "tags": ["反例", "证明"], "sentiment": "建议" },
+        { "id": "I", "summary": "练习测试的自动对比反馈让我知道哪里理解错了。", "tags": ["练习", "反馈"], "sentiment": "正面" }
+      ],
+      "radarLabels": ["内容质量", "讲解清晰度", "互动性", "动画效果", "代码讲解"],
+      "radarScores": [4.6, 4.4, 4.2, 4.7, 4.5],
+      "teacherNote": "本页为参赛网站原型数据占位。后续可用教学文档中的真实反馈替换，并据此生成词云与雷达图。"
+    }
+  }
+]
+

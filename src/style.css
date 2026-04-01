@@ -1,0 +1,138 @@
+/* 策算学堂 · 全局设计令牌（计算机设计大赛站点） */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,600&family=Noto+Sans+SC:wght@400;500;600;700;900&display=swap');
+
+:root {
+  --brand: #1a2f5a;
+  --brand-deep: #122040;
+  --brand-soft: #2d4a7c;
+  --gold: #f5a623;
+  --gold-hover: #ffc14d;
+  --brand-on-gold: #1a2f5a;
+
+  --text: #5c5668;
+  --text-h: #0f1729;
+  --text-muted: #8a8496;
+  --bg: #f6f7fb;
+  --bg-elevated: rgba(255, 255, 255, 0.82);
+  --border: rgba(26, 47, 90, 0.1);
+  --border-strong: rgba(26, 47, 90, 0.16);
+  --code-bg: #f0f2f8;
+
+  --accent: var(--gold);
+  --accent-bg: rgba(245, 166, 35, 0.14);
+  --accent-border: rgba(245, 166, 35, 0.42);
+  --brand-bg-subtle: rgba(26, 47, 90, 0.06);
+  --brand-ring: rgba(26, 47, 90, 0.14);
+
+  --shadow-sm: 0 2px 8px rgba(15, 23, 41, 0.06);
+  --shadow-md: 0 8px 32px rgba(15, 23, 41, 0.08), 0 2px 8px rgba(15, 23, 41, 0.04);
+  --shadow-lg: 0 24px 64px rgba(26, 47, 90, 0.12);
+
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+
+  --sans: 'DM Sans', 'Noto Sans SC', system-ui, sans-serif;
+  --heading: 'DM Sans', 'Noto Sans SC', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.55;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  background-color: var(--bg);
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (max-width: 1024px) {
+  :root {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --text: #a8a29e;
+    --text-h: #f5f5f4;
+    --text-muted: #78716c;
+    --bg: #0c0e14;
+    --bg-elevated: rgba(22, 24, 32, 0.88);
+    --border: rgba(245, 166, 35, 0.12);
+    --border-strong: rgba(245, 166, 35, 0.22);
+    --code-bg: #151822;
+    --accent-bg: rgba(245, 166, 35, 0.12);
+    --accent-border: rgba(245, 166, 35, 0.35);
+    --brand-bg-subtle: rgba(26, 47, 90, 0.25);
+    --brand-ring: rgba(245, 166, 35, 0.15);
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.45);
+  }
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  background:
+    radial-gradient(ellipse 120% 80% at 100% -10%, rgba(245, 166, 35, 0.12), transparent 50%),
+    radial-gradient(ellipse 90% 60% at 0% 100%, rgba(26, 47, 90, 0.14), transparent 55%),
+    var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background:
+      radial-gradient(ellipse 100% 70% at 100% 0%, rgba(245, 166, 35, 0.08), transparent 45%),
+      radial-gradient(ellipse 80% 50% at 0% 100%, rgba(26, 47, 90, 0.35), transparent 50%),
+      var(--bg);
+  }
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--heading);
+  color: var(--text-h);
+}
+
+#app {
+  min-height: 100svh;
+  margin: 0;
+  max-width: none;
+  width: 100%;
+  text-align: left;
+  border: none;
+  box-sizing: border-box;
+}
+
+a {
+  color: var(--brand-soft);
+}
+@media (prefers-color-scheme: dark) {
+  a {
+    color: #93c5fd;
+  }
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  padding: 0.12em 0.45em;
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+p {
+  margin: 0;
+}
+
+
