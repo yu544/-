@@ -1,765 +1,523 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import axios from 'axios'
 
 const props = defineProps({
   course: { type: Object, required: true },
 })
 
-const editorEl = ref(null)
-let monacoEditor = null
-let monacoRef = null
+const ex = computed(() => props.course.exercise ?? {})
+const quiz = computed(() => ex.value.conceptQuiz ?? { singleChoice: [], trueFalse: [] })
 
-const code = ref(String(props.course.exercise?.defaultCode ?? ''))
-const running = ref(false)
+const code = ref(String(ex.value.defaultCode ?? ''))
+watch(
+  () => ex.value.defaultCode,
+  (v) => {
+    if (v != null) code.value = String(v)
+  },
+)
+
+const JUDGE0_LANGUAGE_C = 50
+
+const builtinTests = [
+  { tianji: [90, 85, 70], qi: [95, 88, 75] },
+  { tianji: [1], qi: [2] },
+  { tianji: [10, 20, 30], qi: [15, 25, 35] },
+  { tianji: [100, 50, 50, 50], qi: [60, 60, 60, 60] },
+]
+
+const runLoading = ref(false)
 const runResult = ref(null)
 const runError = ref('')
 
-const languageId = 50 // Judge0: C（不同部署可能 ID 不同；必要时可在服务端/前端配置）
-const languageLabel = computed(() => (props.course.exercise?.language === 'c' ? 'C 语言' : '语言'))
+async function runJudge0() {
+  runError.value = ''
+  runResult.value = null
+  runLoading.value = true
+  try {
+    const resp = await axios.post('/api/judge0/run', {
+      languageId: JUDGE0_LANGUAGE_C,
+      sourceCode: code.value,
+      testcases: builtinTests,
+    })
+    runResult.value = resp.data
+  } catch (e) {
+    runError.value =
+      e?.response?.data?.message ??
+      e?.message ??
+      '请求失败。请确认已运行 node server/index.js，并在环境变量中配置 JUDGE0_BASE_URL 指向可用 Judge0。'
+  } finally {
+    runLoading.value = false
+  }
+}
 
-// ------------------------ AI 分级提示 ------------------------
-const hintLevel = ref(1) // 1/2/3
 const hintLoading = ref(false)
+const hintLevel = ref(1)
 const hintText = ref('')
 
-async function generateHint() {
+async function fetchHint(level) {
+  hintLevel.value = level
   hintLoading.value = true
   hintText.value = ''
   try {
     const resp = await axios.post('/api/ai/hints', {
-      level: hintLevel.value,
-      problemTitle: props.course.exercise?.title ?? '田忌赛马',
-      problemStatement: props.course.exercise?.problemStatement ?? '',
+      level,
+      problemTitle: ex.value.title ?? '',
+      problemStatement: ex.value.problemStatement ?? '',
       userCode: code.value,
     })
-    const data = resp.data
-    hintText.value = data?.hint ?? ''
-  } catch (e) {
-    hintText.value = e?.response?.data?.message ?? e?.message ?? '生成提示失败'
+    hintText.value = resp.data?.hint ?? ''
+  } catch {
+    hintText.value = '提示服务暂不可用，请确认后端已启动。'
   } finally {
     hintLoading.value = false
   }
 }
 
-const testcases = computed(() => {
-  const baseN = props.course.simulation?.defaultHorses ?? 3
-  const tClassic = props.course.simulation?.classicTianji ?? [90, 85, 70]
-  const qClassic = props.course.simulation?.classicQi ?? [95, 88, 75]
+const singlePicked = ref({})
+const tfPicked = ref({})
+const challengeOpen = ref({})
 
-  const t1 = tClassic.slice(0, 3)
-  const q1 = qClassic.slice(0, 3)
-
-  // 变体：把齐王稍微“拉大/拉小”
-  const t2 = t1.map((x, i) => clamp(x + (i % 2 === 0 ? 5 : -5)))
-  const q2 = q1.map((x, i) => clamp(x + (i % 2 === 0 ? -3 : 3)))
-
-  // 变体：n=4 扩展（使用经典数据填充 + padding）
-  const t3 = [...tClassic.slice(0, Math.min(4, tClassic.length))]
-  while (t3.length < 4) t3.push(clamp(t3[t3.length - 1] - 7))
-  const q3 = [...qClassic.slice(0, Math.min(4, qClassic.length))]
-  while (q3.length < 4) q3.push(clamp(q3[q3.length - 1] - 6))
-
-  const makeTc = (tianji, qi) => ({
-    tianji: tianji.map(Number),
-    qi: qi.map(Number),
-  })
-
-  return [makeTc(t1, q1), makeTc(t2, q2), makeTc(t3, q3)]
-})
-
-function clamp(x) {
-  return Math.max(0, Math.min(100, Math.round(Number(x))))
-}
-
-function syncCodeFromEditor() {
-  if (monacoEditor) code.value = monacoEditor.getValue()
-}
-
-async function initMonaco() {
-  const monaco = await import('monaco-editor')
-  monacoRef = monaco
-  if (!editorEl.value) return
-
-  monacoEditor = monaco.editor.create(editorEl.value, {
-    value: code.value,
-    language: 'c',
-    theme: 'vs-dark',
-    automaticLayout: true,
-    minimap: { enabled: false },
-  })
-
-  monacoEditor.onDidChangeModelContent(() => {
-    syncCodeFromEditor()
-  })
-}
-
-onMounted(() => {
-  initMonaco().catch(() => {})
-})
-
-onBeforeUnmount(() => {
-  if (monacoEditor) monacoEditor.dispose()
-  monacoEditor = null
-  monacoRef = null
-})
-
-async function run() {
-  running.value = true
-  runError.value = ''
-  runResult.value = null
-  syncCodeFromEditor()
-
-  try {
-    const payload = {
-      languageId,
-      sourceCode: code.value,
-      testcases: testcases.value,
-    }
-
-    const resp = await axios.post('/api/judge0/run', payload)
-    runResult.value = resp.data
-  } catch (e) {
-    runError.value = e?.response?.data?.message ?? e?.message ?? '运行失败'
-  } finally {
-    running.value = false
+function pickSingle(qIdx, choiceIdx, answerIndex) {
+  singlePicked.value = {
+    ...singlePicked.value,
+    [qIdx]: {
+      choiceIdx,
+      answerIndex,
+      correct: choiceIdx === answerIndex,
+    },
   }
 }
 
-function verdictText() {
-  if (!runResult.value) return ''
-  if (!runResult.value.ok) return '未运行成功'
-  return runResult.value.overall ? 'Accepted（全部通过）' : 'Wrong Answer（至少有用例不通过）'
+function pickTf(qIdx, answer, correctAnswer) {
+  tfPicked.value = {
+    ...tfPicked.value,
+    [qIdx]: {
+      answer,
+      correctAnswer,
+      correct: answer === correctAnswer,
+    },
+  }
 }
 
-// ------------------------ 概念测验（单选 / 判断） ------------------------
-const quizSingle = computed(() => props.course.exercise?.conceptQuiz?.singleChoice ?? [])
-const quizTF = computed(() => props.course.exercise?.conceptQuiz?.trueFalse ?? [])
-const expansions = computed(() => props.course.exercise?.expansionChallenges ?? [])
-
-const singlePicks = ref({})
-const tfPicks = ref({})
-
-function pickSingle(qIdx, optIdx) {
-  singlePicks.value = { ...singlePicks.value, [qIdx]: optIdx }
+function optionStateSingle(qIdx, optIdx) {
+  const p = singlePicked.value[qIdx]
+  if (!p) return ''
+  if (optIdx === p.answerIndex) return 'good'
+  if (optIdx === p.choiceIdx && !p.correct) return 'bad'
+  if (optIdx === p.choiceIdx && p.correct) return 'sel'
+  return ''
 }
 
-function pickTf(qIdx, val) {
-  tfPicks.value = { ...tfPicks.value, [qIdx]: val }
+function optionStateTf(qIdx, optVal) {
+  const p = tfPicked.value[qIdx]
+  if (!p) return ''
+  if (optVal === p.correctAnswer) return 'good'
+  if (optVal === p.answer && !p.correct) return 'bad'
+  if (optVal === p.answer && p.correct) return 'sel'
+  return ''
 }
 
-const quizScore = computed(() => {
-  let ok = 0
-  let total = 0
-  quizSingle.value.forEach((q, idx) => {
-    total++
-    const p = singlePicks.value[idx]
-    if (p !== undefined && p === q.answerIndex) ok++
-  })
-  quizTF.value.forEach((q, idx) => {
-    total++
-    const p = tfPicks.value[idx]
-    if (p !== undefined && !!p === !!q.answer) ok++
-  })
-  return { ok, total }
-})
+function challengeHint(ch, idx) {
+  const title = String(ch?.title ?? '')
+  if (title.includes('变体一')) {
+    return '提示：本题贪心依赖“局部最优可推出全局最优”的结构。马匹扩展到 5 匹（甚至任意 n）时，只要胜负规则不变（仅比较大小，胜+200/负-200/平0），排序 + 双指针策略仍成立。可从交换论证角度思考：把非最优交换成当前最优不会变差。'
+  }
+  if (title.includes('变体二')) {
+    return '提示：当“差值 > 10 才算胜”后，胜负不再只由大小关系决定，原贪心的关键比较条件被破坏。可先重建状态：定义有效胜利边，再考虑 DP/搜索或带约束匹配策略，并用小规模数据验证是否存在反例。'
+  }
+  return `思考方向：${ch?.prompt ?? ''}`
+}
+
+function toggleChallengeHint(idx) {
+  challengeOpen.value = {
+    ...challengeOpen.value,
+    [idx]: !challengeOpen.value[idx],
+  }
+}
 </script>
 
 <template>
-  <div class="exercise">
-    <div class="exercise-head">
-      <div class="left">
-        <div class="section-label">编程题</div>
-        <div class="kicker">{{ props.course.exercise.title }}</div>
-        <div class="stmt pre-wrap">{{ props.course.exercise.problemStatement }}</div>
-      </div>
-      <div class="right">
-        <div class="lang">{{ languageLabel }}</div>
-        <div class="tests">预置测试用例：{{ testcases.length }} 个</div>
-      </div>
-    </div>
+  <div class="ex">
+    <section class="block">
+      <h3 class="h">{{ ex.title }}</h3>
+      <pre class="stmt">{{ ex.problemStatement }}</pre>
+    </section>
 
-    <div class="quiz-card" v-if="quizSingle.length || quizTF.length">
-      <div class="section-label">概念测验</div>
-      <div class="quiz-head">
-        <div class="quiz-title">单选题 · 判断题</div>
-        <div v-if="quizScore.total" class="quiz-score">
-          得分：<strong>{{ quizScore.ok }}</strong> / {{ quizScore.total }}
+    <section class="block">
+      <div class="row">
+        <span class="lbl">代码（C · Judge0 language_id={{ JUDGE0_LANGUAGE_C }}）</span>
+        <div class="row-actions">
+          <button type="button" class="btn" :disabled="hintLoading" @click="fetchHint(1)">提示 L1</button>
+          <button type="button" class="btn ghost" :disabled="hintLoading" @click="fetchHint(2)">L2</button>
+          <button type="button" class="btn ghost" :disabled="hintLoading" @click="fetchHint(3)">L3</button>
         </div>
       </div>
+      <textarea v-model="code" class="editor" spellcheck="false" />
+      <p v-if="hintText" class="hint">{{ hintText }}</p>
+    </section>
 
-      <div v-for="(q, idx) in quizSingle" :key="'s' + idx" class="quiz-q">
-        <div class="quiz-q-title">{{ idx + 1 }}. {{ q.q }}</div>
-        <div class="quiz-options">
+    <section class="block">
+      <button type="button" class="btn primary" :disabled="runLoading" @click="runJudge0">
+        {{ runLoading ? '判题中…' : '运行内置测试（Judge0）' }}
+      </button>
+      <p v-if="runError" class="err">{{ runError }}</p>
+      <div v-if="runResult?.ok" class="verdict" :class="{ pass: runResult.overall }">
+        {{ runResult.overall ? '全部通过' : '部分未通过' }} · {{ runResult.passedCount }}/{{ runResult.total }}
+      </div>
+      <ul v-if="runResult?.results?.length" class="cases">
+        <li v-for="r in runResult.results" :key="r.testIndex" :class="{ fail: !r.passed }">
+          #{{ r.testIndex + 1 }} 期望 {{ r.expectedOutput }}，输出「{{ r.actualOutput }}」
+          <span v-if="r.compileOutput" class="suberr">{{ r.compileOutput.slice(0, 200) }}</span>
+        </li>
+      </ul>
+    </section>
+
+    <section v-if="quiz.singleChoice?.length" class="block">
+      <h3 class="h">概念单选</h3>
+      <div v-for="(q, idx) in quiz.singleChoice" :key="'s' + idx" class="q">
+        <div class="qq">{{ idx + 1 }}. {{ q.q }}</div>
+        <div class="opts">
           <button
-            v-for="(opt, oi) in q.options"
-            :key="oi"
+            v-for="(opt, j) in q.options"
+            :key="j"
             type="button"
-            class="opt-btn"
-            :class="{
-              picked: singlePicks[idx] === oi,
-              good: singlePicks[idx] !== undefined && oi === q.answerIndex,
-              bad: singlePicks[idx] === oi && oi !== q.answerIndex,
-            }"
-            @click="pickSingle(idx, oi)"
+            class="opt"
+            :class="optionStateSingle(idx, j)"
+            @click="pickSingle(idx, j, q.answerIndex)"
           >
-            {{ String.fromCharCode(65 + oi) }}. {{ opt }}
+            {{ opt }}
           </button>
         </div>
-        <div v-if="singlePicks[idx] !== undefined" class="quiz-explain">
-          {{ q.explain }}
+        <div v-if="singlePicked[idx]" class="answer">
+          <div class="answer-row">
+            <span class="answer-k">正确答案：</span>
+            <span class="answer-v">{{ q.options?.[q.answerIndex] ?? `选项 ${q.answerIndex + 1}` }}</span>
+            <span class="answer-tag" :class="{ ok: singlePicked[idx].correct, no: !singlePicked[idx].correct }">
+              {{ singlePicked[idx].correct ? '你答对了' : '你答错了' }}
+            </span>
+          </div>
+          <p class="exp">{{ q.explain }}</p>
         </div>
       </div>
+    </section>
 
-      <div v-for="(q, idx) in quizTF" :key="'t' + idx" class="quiz-q">
-        <div class="quiz-q-title">{{ quizSingle.length + idx + 1 }}. {{ q.q }}</div>
-        <div class="tf-row">
+    <section v-if="quiz.trueFalse?.length" class="block">
+      <h3 class="h">判断题</h3>
+      <div v-for="(q, idx) in quiz.trueFalse" :key="'t' + idx" class="q">
+        <div class="qq">{{ idx + 1 }}. {{ q.q }}</div>
+        <div class="opts">
           <button
             type="button"
-            class="tf-btn"
-            :class="{ picked: tfPicks[idx] === true, good: tfPicks[idx] !== undefined && q.answer === true && tfPicks[idx] === true, bad: tfPicks[idx] === true && q.answer !== true }"
-            @click="pickTf(idx, true)"
+            class="opt"
+            :class="optionStateTf(idx, true)"
+            @click="pickTf(idx, true, q.answer === true)"
           >
             正确
           </button>
           <button
             type="button"
-            class="tf-btn"
-            :class="{ picked: tfPicks[idx] === false, good: tfPicks[idx] !== undefined && q.answer === false && tfPicks[idx] === false, bad: tfPicks[idx] === false && q.answer !== false }"
-            @click="pickTf(idx, false)"
+            class="opt"
+            :class="optionStateTf(idx, false)"
+            @click="pickTf(idx, false, q.answer === false)"
           >
             错误
           </button>
         </div>
-        <div v-if="tfPicks[idx] !== undefined" class="quiz-explain">{{ q.explain }}</div>
-      </div>
-    </div>
-
-    <div v-if="expansions.length" class="expand-card">
-      <div class="section-label">拓展思考</div>
-      <div v-for="(ex, i) in expansions" :key="i" class="expand-item">
-        <div class="expand-title">{{ ex.title }}</div>
-        <p class="expand-body">{{ ex.prompt }}</p>
-      </div>
-    </div>
-
-    <div class="editor-card">
-      <div class="editor-top">
-        <div class="editor-title">在线代码 · Monaco Editor</div>
-        <div class="actions">
-          <button class="btn primary" type="button" :disabled="running" @click="run">▶ 运行测试</button>
-        </div>
-      </div>
-      <div ref="editorEl" class="editor"></div>
-      <div v-if="runError" class="error">
-        {{ runError }}
-      </div>
-    </div>
-
-    <div class="result-card">
-      <div class="result-title">
-        运行结果：<strong>{{ verdictText() }}</strong>
-      </div>
-
-      <div v-if="runResult?.ok && runResult.results" class="tests-res">
-        <div class="overall">
-          通过 {{ runResult.passedCount }} / {{ runResult.total }}
-        </div>
-
-        <div class="res-list">
-          <div v-for="r in runResult.results" :key="r.testIndex" class="res-item" :class="{ pass: r.passed, fail: !r.passed }">
-            <div class="res-top">
-              <span class="tag">用例 #{{ r.testIndex + 1 }}</span>
-              <span class="status">{{ r.passed ? '通过' : '不通过' }}</span>
-            </div>
-            <div class="line"><span class="muted">expected:</span> <span class="mono">{{ r.expectedOutput }}</span></div>
-            <div class="line"><span class="muted">actual:</span> <span class="mono">{{ r.actualOutput }}</span></div>
-            <div v-if="r.compileOutput" class="compile">
-              <div class="compile-title">编译/运行信息</div>
-              <pre class="pre">{{ r.compileOutput }}</pre>
-            </div>
+        <div v-if="tfPicked[idx]" class="answer">
+          <div class="answer-row">
+            <span class="answer-k">正确答案：</span>
+            <span class="answer-v">{{ (q.answer === true) ? '正确' : '错误' }}</span>
+            <span class="answer-tag" :class="{ ok: tfPicked[idx].correct, no: !tfPicked[idx].correct }">
+              {{ tfPicked[idx].correct ? '你答对了' : '你答错了' }}
+            </span>
           </div>
+          <p class="exp">{{ q.explain }}</p>
         </div>
       </div>
+    </section>
 
-      <div v-else class="empty">
-        点击“运行测试”查看 Judge0 执行结果（需要你在后端配置 `JUDGE0_BASE_URL`）。
-      </div>
-    </div>
-
-    <div class="hint-card">
-      <div class="section-label">AI 辅助</div>
-      <div class="hint-top">
-        <div class="hint-title">分级提示 · 参赛亮点</div>
-        <div class="hint-levels" role="radiogroup" aria-label="提示等级">
-          <label class="hint-option">
-            <input type="radio" value="1" v-model.number="hintLevel" />
-            思路提示
-          </label>
-          <label class="hint-option">
-            <input type="radio" value="2" v-model.number="hintLevel" />
-            贪心关键点
-          </label>
-          <label class="hint-option">
-            <input type="radio" value="3" v-model.number="hintLevel" />
-            查看参考答案方向
-          </label>
+    <section v-if="ex.expansionChallenges?.length" class="block">
+      <h3 class="h">拓展思考</h3>
+      <div v-for="(ch, i) in ex.expansionChallenges" :key="i" class="ch challenge-grid">
+        <div class="challenge-left">
+          <div class="ch-t">{{ ch.title }}</div>
+          <p class="ch-p">{{ ch.prompt }}</p>
+          <button type="button" class="hint-toggle" @click="toggleChallengeHint(i)">
+            {{ challengeOpen[i] ? '收起提示' : '显示思考提示' }}
+          </button>
+        </div>
+        <div v-if="challengeOpen[i]" class="challenge-right">
+          <div class="hint-k">思考提示</div>
+          <p class="hint-v">{{ challengeHint(ch, i) }}</p>
         </div>
       </div>
-
-      <div class="hint-actions">
-        <button class="btn primary" type="button" :disabled="hintLoading" @click="generateHint">
-          {{ hintLoading ? '生成中...' : '生成提示' }}
-        </button>
-        <div class="hint-note">
-          提示将优先给出“可理解的方向”，避免直接给出完整可复制答案。
-        </div>
-      </div>
-
-      <div v-if="hintText" class="hint-body">
-        <pre class="hint-pre">{{ hintText }}</pre>
-      </div>
-      <div v-else class="hint-empty">点击“生成提示”获取分级帮助。</div>
-    </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.section-label {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--brand-soft);
-  margin-bottom: 8px;
-}
-
-.pre-wrap {
-  white-space: pre-wrap;
-}
-
-.exercise {
+.ex {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-}
-
-.quiz-card,
-.expand-card {
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border);
-  background: var(--bg-elevated);
-  padding: 18px 20px;
-  box-shadow: var(--shadow-sm);
-}
-
-.quiz-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
-.quiz-title {
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.quiz-score {
-  font-size: 14px;
-  color: var(--text);
-}
-
-.quiz-q {
-  margin-bottom: 18px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border);
-}
-.quiz-q:last-child {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: none;
-}
-
-.quiz-q-title {
-  font-weight: 800;
-  color: var(--text-h);
-  margin-bottom: 10px;
-  line-height: 1.55;
-}
-
-.quiz-options {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.opt-btn {
-  text-align: left;
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text-h);
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    border-color 0.15s,
-    background 0.15s;
-}
-.opt-btn:hover {
-  border-color: rgba(245, 166, 35, 0.4);
-  background: rgba(245, 166, 35, 0.06);
-}
-.opt-btn.picked {
-  border-color: rgba(26, 47, 90, 0.35);
-  background: var(--brand-bg-subtle);
-}
-.opt-btn.good {
-  border-color: rgba(22, 163, 74, 0.45);
-  background: rgba(22, 163, 74, 0.1);
-}
-.opt-btn.bad {
-  border-color: rgba(220, 38, 38, 0.45);
-  background: rgba(220, 38, 38, 0.08);
-}
-
-.tf-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.tf-btn {
-  min-width: 100px;
-  height: 40px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  font-weight: 800;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.tf-btn.picked {
-  background: var(--brand-bg-subtle);
-}
-.tf-btn.good {
-  border-color: rgba(22, 163, 74, 0.45);
-  background: rgba(22, 163, 74, 0.1);
-}
-.tf-btn.bad {
-  border-color: rgba(220, 38, 38, 0.45);
-  background: rgba(220, 38, 38, 0.08);
-}
-
-.quiz-explain {
-  margin-top: 10px;
-  padding: 12px 14px;
-  border-radius: var(--radius-md);
-  background: rgba(245, 166, 35, 0.08);
-  border: 1px solid rgba(245, 166, 35, 0.22);
-  font-size: 14px;
-  line-height: 1.65;
-  color: var(--text);
-}
-
-.expand-item {
-  margin-top: 14px;
-}
-.expand-item:first-child {
-  margin-top: 0;
-}
-.expand-title {
-  font-weight: 900;
-  color: var(--text-h);
-  margin-bottom: 6px;
-}
-.expand-body {
-  margin: 0;
-  color: var(--text);
-  line-height: 1.7;
-  font-size: 15px;
-}
-
-.exercise-head {
-  display: grid;
-  grid-template-columns: 1fr 0.38fr;
   gap: 14px;
 }
-
-@media (max-width: 900px) {
-  .exercise-head {
-    grid-template-columns: 1fr;
-  }
-}
-
-.kicker {
-  font-weight: 900;
-  color: var(--text-h);
-  margin-bottom: 8px;
-}
-
-.stmt {
-  color: var(--text);
-  line-height: 1.8;
-}
-
-.right {
+.block {
   border-radius: 16px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(26, 47, 90, 0.04);
-  padding: 12px;
-}
-
-:global(.dark) .right {
-  background: rgba(26, 47, 90, 0.08);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.lang {
-  font-weight: 900;
-  color: var(--text-h);
-  margin-bottom: 8px;
-}
-
-.tests {
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 13px;
-}
-
-.editor-card {
-  border-radius: 16px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
+  border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.35);
   padding: 14px;
 }
-
-:global(.dark) .editor-card {
-  background: rgba(22, 23, 29, 0.7);
-  border-color: rgba(46, 48, 58, 0.95);
+:global(.dark) .block {
+  background: rgba(22, 23, 29, 0.55);
 }
-
-.editor-top {
+.h {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  color: var(--text-h);
+}
+.stmt {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text);
+}
+.row {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  align-items: center;
   gap: 10px;
+  align-items: center;
   margin-bottom: 8px;
 }
-
-.editor-title {
+.lbl {
   font-weight: 900;
   color: var(--text-h);
+  font-size: 14px;
 }
-
+.row-actions {
+  display: flex;
+  gap: 8px;
+}
 .editor {
-  height: 360px;
+  width: 100%;
+  min-height: 220px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px;
   border-radius: 14px;
-  overflow: hidden;
-}
-
-.btn {
-  height: 38px;
-  padding: 0 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(229, 228, 231, 1);
-  background: rgba(255, 255, 255, 0.8);
-  cursor: pointer;
-  font-weight: 900;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
   color: var(--text-h);
+  box-sizing: border-box;
 }
-
+.hint {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--brand-bg-subtle);
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.btn {
+  border-radius: 12px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+  font-weight: 900;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.btn.ghost {
+  background: transparent;
+  font-weight: 800;
+}
 .btn.primary {
-  background: #1a2f5a;
-  border-color: #1a2f5a;
-  color: #fff;
+  background: linear-gradient(135deg, rgba(245, 166, 35, 0.35), rgba(26, 47, 90, 0.12));
 }
-
 .btn:disabled {
-  opacity: 0.7;
+  opacity: 0.5;
   cursor: not-allowed;
 }
-
-.error {
+.err {
+  color: #b91c1c;
+  font-weight: 700;
+  margin: 8px 0 0;
+}
+.verdict {
   margin-top: 10px;
-  color: #dc2626;
-  font-weight: 900;
-  white-space: pre-wrap;
-}
-
-.result-card {
-  border-radius: 16px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(26, 47, 90, 0.04);
-  padding: 14px;
-}
-
-.result-title {
   font-weight: 900;
   color: var(--text-h);
-  margin-bottom: 10px;
 }
-
-.empty {
-  color: var(--text);
+.verdict.pass {
+  color: #15803d;
 }
-
-.overall {
-  font-weight: 900;
-  margin-bottom: 10px;
-}
-
-.res-list {
-  display: grid;
-  gap: 10px;
-}
-
-.res-item {
-  border-radius: 14px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(255, 255, 255, 0.55);
-  padding: 12px;
-}
-
-:global(.dark) .res-item {
-  background: rgba(22, 23, 29, 0.85);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.res-top {
+.cases {
+  margin: 8px 0 0;
+  padding-left: 18px;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
 }
-
-.tag {
-  font-family: var(--mono);
+.cases li.fail {
+  color: #b91c1c;
+}
+.suberr {
+  display: block;
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 4px;
+}
+.q {
+  margin-bottom: 14px;
+}
+.qq {
+  font-weight: 800;
+  color: var(--text-h);
+  margin-bottom: 8px;
+  line-height: 1.6;
+}
+.opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.opt {
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: 8px 12px;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text);
+}
+.opt.sel {
+  border-color: var(--accent-border);
+}
+.opt.good {
+  border-color: rgba(21, 128, 61, 0.55);
+  background: rgba(21, 128, 61, 0.12);
+}
+.opt.bad {
+  border-color: rgba(185, 28, 28, 0.55);
+  background: rgba(185, 28, 28, 0.1);
+}
+.answer {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(26, 47, 90, 0.04);
+}
+.answer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.answer-k {
   font-weight: 900;
   color: var(--text-h);
 }
-
-.status {
-  font-weight: 900;
-}
-
-.res-item.pass .status {
-  color: #16a34a;
-}
-
-.res-item.fail .status {
-  color: #dc2626;
-}
-
-.line {
-  margin-top: 6px;
+.answer-v {
+  font-weight: 800;
   color: var(--text);
 }
-
-.muted {
-  opacity: 0.7;
-  margin-right: 8px;
+.answer-tag {
+  font-size: 12px;
   font-weight: 900;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
 }
-
-.mono {
-  font-family: var(--mono);
+.answer-tag.ok {
+  border-color: rgba(21, 128, 61, 0.55);
+  background: rgba(21, 128, 61, 0.12);
+  color: #15803d;
+}
+.answer-tag.no {
+  border-color: rgba(185, 28, 28, 0.55);
+  background: rgba(185, 28, 28, 0.1);
+  color: #b91c1c;
+}
+.exp {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.7;
+}
+.ch {
+  margin-bottom: 12px;
+}
+.challenge-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.25);
+}
+:global(.dark) .challenge-grid {
+  background: rgba(22, 23, 29, 0.45);
+}
+.ch-t {
   font-weight: 900;
+  color: var(--text-h);
 }
-
-.compile {
-  margin-top: 12px;
+.ch-p {
+  margin: 6px 0 0;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text);
 }
-
-.compile-title {
+.challenge-right {
+  border-left: 1px dashed var(--border);
+  padding-left: 12px;
+}
+.hint-toggle {
+  margin-top: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.hint-toggle:hover {
+  filter: brightness(1.03);
+}
+.hint-k {
+  font-size: 12px;
   font-weight: 900;
   color: var(--text-h);
   margin-bottom: 6px;
 }
-
-.pre {
+.hint-v {
   margin: 0;
-  max-height: 160px;
-  overflow: auto;
-  padding: 10px;
-  border-radius: 12px;
-  background: rgba(0, 0, 0, 0.06);
-}
-
-:global(.dark) .pre {
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.hint-card {
-  border-radius: 16px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(26, 47, 90, 0.04);
-  padding: 14px;
-}
-
-.hint-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-
-.hint-title {
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.hint-levels {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.hint-option {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  color: var(--text);
-  font-weight: 800;
-}
-
-.hint-actions {
-  margin-top: 10px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
-.hint-note {
-  color: var(--text);
   font-size: 13px;
-  line-height: 1.6;
-}
-
-.hint-empty {
-  margin-top: 12px;
+  line-height: 1.7;
   color: var(--text);
 }
-
-.hint-body {
-  margin-top: 12px;
-}
-
-.hint-pre {
-  margin: 0;
-  white-space: pre-wrap;
-  font-family: var(--mono);
-  font-weight: 800;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(26, 47, 90, 0.12);
-  background: rgba(26, 47, 90, 0.04);
+@media (max-width: 860px) {
+  .challenge-grid {
+    grid-template-columns: 1fr;
+  }
+  .challenge-right {
+    border-left: none;
+    border-top: 1px dashed var(--border);
+    padding-left: 0;
+    padding-top: 10px;
+  }
 }
 </style>
-

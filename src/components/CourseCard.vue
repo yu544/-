@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { formatCourseDurationEn } from '../composables/useCourse'
 
 const props = defineProps({
   course: { type: Object, required: true },
@@ -8,6 +9,8 @@ const props = defineProps({
 })
 
 const router = useRouter()
+
+const durationPill = computed(() => formatCourseDurationEn(props.course))
 
 const initials = computed(() => {
   const t = String(props.course.title ?? '')
@@ -22,7 +25,7 @@ const initials = computed(() => {
       <div class="course-card__badge">{{ initials }}</div>
       <div class="course-card__visual-meta">
         <span class="pill">{{ course.difficulty }}</span>
-        <span class="pill">{{ course.timeMinutes }} min</span>
+        <span class="pill">{{ durationPill }}</span>
       </div>
     </div>
 
@@ -35,7 +38,7 @@ const initials = computed(() => {
       </div>
 
       <div class="course-card__actions">
-        <button type="button" class="primary-btn" @click="router.push(`/course/${course.id}`)">
+        <button type="button" class="primary-btn" @click="router.push(`/course/${course.id}/video`)">
           立即学习
         </button>
       </div>

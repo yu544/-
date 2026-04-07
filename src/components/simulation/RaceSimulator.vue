@@ -1,1174 +1,663 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import * as echarts from 'echarts'
-import Sortable from 'sortablejs'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import courses from '../../data/courses.json'
 
-const props = defineProps({
-  // 允许从外部传入课程配置；这里默认用 courses.json 的第一门课
-  courseId: { type: String, default: 'tianji-qiwei' },
-})
+const route = useRoute()
+const courseId = computed(() => String(route.params.id ?? ''))
+const course = computed(() => courses.find((c) => c.id === courseId.value) ?? courses[0])
+const sim = computed(() => course.value?.simulation ?? {})
 
-const course = computed(() => courses.find((c) => c.id === props.courseId) ?? courses[0])
+const n = ref(sim.value.defaultHorses ?? 3)
+const tianji = ref([...(sim.value.classicTianji ?? [90, 85, 70])])
+const qi = ref([...(sim.value.classicQi ?? [95, 88, 75])])
+const strategy = ref('greedy') // greedy | random | custom
+const speedMs = ref(900)
 
-const nMin = 3
-const nMax = 5
+const customOrder = ref([])
+const dragIndex = ref(-1)
 
-const horsesCount = ref(course.value.simulation?.defaultHorses ?? 3)
+const battleRounds = ref([])
+const currentRound = ref(0)
+const battleStarted = ref(false)
+const isAuto = ref(false)
+let autoTimer = null
 
-const tianji = ref([])
-const qi = ref([])
-
-function clamp01to100(x) {
-  const n = Number(x)
-  if (Number.isNaN(n)) return 0
-  return Math.max(0, Math.min(100, Math.round(n)))
-}
-
-function seededClassic(n) {
-  const tClassic = course.value.simulation?.classicTianji ?? [90, 85, 70]
-  const qClassic = course.value.simulation?.classicQi ?? [95, 88, 75]
-  const pad = (arr) => {
-    const out = [...arr]
-    while (out.length < n) out.push(Math.max(0, Math.min(100, arr[arr.length - 1] - 5 * (out.length - arr.length + 1))))
-    return out.slice(0, n)
-  }
-  return { t: pad(tClassic), q: pad(qClassic) }
-}
-
-function randomArray(n) {
-  return Array.from({ length: n }, () => Math.floor(Math.random() * 101))
-}
-
-function resetFromClassic() {
-  const { t, q } = seededClassic(horsesCount.value)
-  tianji.value = t
-  qi.value = q
-}
-
-function randomizeAll() {
-  tianji.value = randomArray(horsesCount.value)
-  qi.value = randomArray(horsesCount.value)
-}
-
-function initArrays() {
-  horsesCount.value = clamp01to100(horsesCount.value)
-  if (horsesCount.value < nMin) horsesCount.value = nMin
-  if (horsesCount.value > nMax) horsesCount.value = nMax
-  resetFromClassic()
+const compareMoney = ref({ greedy: null, random: null, custom: null })
+const compareLabel = {
+  greedy: '贪心算法',
+  random: '随机匹配',
+  custom: '自定义排列',
 }
 
 watch(
-  () => horsesCount.value,
-  (n) => {
-    const nn = Math.max(nMin, Math.min(nMax, Number(n)))
-    if (nn !== n) horsesCount.value = nn
-    // 保持长度一致
-    const { t, q } = seededClassic(nn)
-    tianji.value = t
-    qi.value = q
-  }
+  () => sim.value,
+  (s) => {
+    const max = s.maxHorses ?? 5
+    if (n.value > max) n.value = max
+  },
+  { deep: true },
 )
 
-onMounted(() => {
-  initArrays()
-  initCustomSortable()
+watch(n, (raw) => {
+  const max = sim.value.maxHorses ?? 5
+  let len = Math.min(Math.max(1, Number(raw) || 1), max)
+  if (len !== n.value) {
+    n.value = len
+    return
+  }
+  while (tianji.value.length < len) tianji.value.push(70)
+  while (qi.value.length < len) qi.value.push(75)
+  if (tianji.value.length > len) tianji.value = tianji.value.slice(0, len)
+  if (qi.value.length > len) qi.value = qi.value.slice(0, len)
+  syncCustomOrder()
+  resetBattle()
 })
 
-// ------------------------ 策略与对战逻辑 ------------------------
+watch([tianji, qi, strategy], () => {
+  syncCustomOrder()
+  resetBattle()
+})
 
-function shuffle(arr) {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
+onBeforeUnmount(() => stopAuto())
 
 function sortAsc(arr) {
   return [...arr].sort((a, b) => a - b)
 }
 
-function compare(a, b) {
-  if (a > b) return 'win'
-  if (a < b) return 'lose'
-  return 'draw'
-}
-
-function scoreOf(result) {
-  if (result === 'win') return 200
-  if (result === 'lose') return -200
+function scoreDelta(tVal, qVal) {
+  if (tVal > qVal) return 200
+  if (tVal < qVal) return -200
   return 0
 }
 
-/**
- * 田忌赛马（典型贪心解法）
- * - 两边都按战力升序排序
- * - 每轮尽量用“能赢的最合适马”去对抗
- * - 记录步骤用于步骤回放
- */
-function greedyRace(tianjiArr, qiArr) {
-  const t = sortAsc(tianjiArr)
-  const q = sortAsc(qiArr)
+function resultText(delta) {
+  if (delta > 0) return '胜'
+  if (delta < 0) return '负'
+  return '平'
+}
 
+function parseNums(s) {
+  return String(s)
+    .trim()
+    .split(/[\s,，]+/)
+    .filter(Boolean)
+    .map(Number)
+    .filter((x) => !Number.isNaN(x))
+}
+
+const tianjiInput = ref(tianji.value.join(' '))
+const qiInput = ref(qi.value.join(' '))
+
+watch(tianji, (v) => (tianjiInput.value = v.join(' ')), { deep: true })
+watch(qi, (v) => (qiInput.value = v.join(' ')), { deep: true })
+
+function applyInputs() {
+  const ta = parseNums(tianjiInput.value)
+  const qa = parseNums(qiInput.value)
+  const max = sim.value.maxHorses ?? 10
+  if (ta.length === 0 || ta.length !== qa.length) return
+  if (ta.length > max) {
+    tianji.value = ta.slice(0, max)
+    qi.value = qa.slice(0, max)
+    n.value = max
+  } else {
+    tianji.value = ta
+    qi.value = qa
+    n.value = ta.length
+  }
+}
+
+function loadClassic() {
+  const c = sim.value.classicN ?? 3
+  n.value = c
+  tianji.value = [...(sim.value.classicTianji ?? [])].slice(0, c)
+  qi.value = [...(sim.value.classicQi ?? [])].slice(0, c)
+}
+
+function randInt(min, max) {
+  return Math.floor(min + Math.random() * (max - min + 1))
+}
+
+function randomPowers() {
+  // n=1/2 在「每档齐王>田忌且总战力田忌<齐王」下，难以出现经典贪心净胜；演示以 3 匹及以上为宜
+  if (n.value < 3) n.value = 3
+  const len = n.value
+  if (len <= 0) return
+
+  const maxTry = 450
+  for (let attempt = 0; attempt < maxTry; attempt++) {
+    // 分档生成：齐王降序、田忌同档更弱；全局 max∈齐王、min∈田忌、sum(田忌)<sum(齐王)
+    const q = new Array(len)
+    q[0] = randInt(92, 108)
+    for (let i = 1; i < len; i++) {
+      const down = randInt(4, 12)
+      q[i] = Math.max(40, q[i - 1] - down)
+    }
+
+    const t = q.map((qv, i) => {
+      const gap = randInt(5, 16) + Math.floor(i / 2)
+      return Math.max(20, qv - gap)
+    })
+
+    for (let i = 1; i < len; i++) {
+      if (t[i] >= t[i - 1]) t[i] = Math.max(20, t[i - 1] - randInt(1, 4))
+      if (t[i] >= q[i]) t[i] = Math.max(20, q[i] - randInt(3, 8))
+    }
+    if (t[0] >= q[0]) t[0] = Math.max(20, q[0] - randInt(6, 12))
+
+    t[len - 1] = Math.min(t[len - 1], q[len - 1] - randInt(3, 7))
+
+    for (let i = 0; i < len; i++) {
+      if (t[i] >= q[i]) t[i] = Math.max(20, q[i] - randInt(1, 3))
+    }
+
+    const sumT = t.reduce((a, b) => a + b, 0)
+    const sumQ = q.reduce((a, b) => a + b, 0)
+    if (sumT >= sumQ) continue
+
+    const globalMin = Math.min(...t, ...q)
+    const globalMax = Math.max(...t, ...q)
+    if (!(t.includes(globalMin) && q.includes(globalMax))) continue
+
+    const { money, hasWeakVsStrong } = evalGreedyMeta(t, q)
+    // 整场净银币为正（田忌最终胜利）；且贪心路径中需出现「最弱对最强」弃子局（该场多为战力上的负场）
+    if (money <= 0) continue
+    if (len >= 2 && !hasWeakVsStrong) continue
+
+    qi.value = q
+    tianji.value = t
+    return
+  }
+
+  loadClassic()
+}
+
+function evalGreedyMeta(tArr, qArr) {
+  const rounds = enrichRounds(greedyPlan(tArr, qArr))
+  const money = rounds.length ? rounds[rounds.length - 1].moneyAfter : 0
+  const hasWeakVsStrong = rounds.some((r) => /最弱对最强/.test(String(r.pick ?? '')))
+  return { money, hasWeakVsStrong, rounds }
+}
+
+function syncCustomOrder() {
+  customOrder.value = tianji.value.map((v, idx) => ({ id: `${idx}-${v}`, power: v }))
+}
+
+function moveCustom(idx, step) {
+  const j = idx + step
+  if (j < 0 || j >= customOrder.value.length) return
+  ;[customOrder.value[idx], customOrder.value[j]] = [customOrder.value[j], customOrder.value[idx]]
+}
+
+function onDragStart(i) {
+  dragIndex.value = i
+}
+
+function onDrop(i) {
+  const from = dragIndex.value
+  dragIndex.value = -1
+  if (from < 0 || from === i) return
+  const arr = [...customOrder.value]
+  const [item] = arr.splice(from, 1)
+  arr.splice(i, 0, item)
+  customOrder.value = arr
+}
+
+function greedyPlan(tArr, qArr) {
+  const t = sortAsc(tArr.map(Number))
+  const q = sortAsc(qArr.map(Number))
   let i = 0
   let j = t.length - 1
   let k = 0
   let l = q.length - 1
-
-  let money = 0
-  const steps = []
-  const n = t.length
-
-  for (let round = 0; round < n; round++) {
+  const rounds = []
+  for (let round = 0; round < t.length; round++) {
     const tStrong = t[j]
     const tWeak = t[i]
     const qStrong = q[l]
     const qWeak = q[k]
-
-    let chosenT
-    let chosenQ
-    let result
-    let reason
-
     if (tStrong > qStrong) {
-      // 强对强，必赢
-      chosenT = tStrong
-      chosenQ = qStrong
-      result = 'win'
-      reason = '田忌最强可战胜齐王最强（强对强必赢）'
+      rounds.push({
+        round: round + 1,
+        t: tStrong,
+        q: qStrong,
+        pick: '最强对最强，确保拿下这一分',
+      })
       j--
       l--
     } else if (tWeak > qWeak) {
-      // 弱对弱，也能赢
-      chosenT = tWeak
-      chosenQ = qWeak
-      result = 'win'
-      reason = '田忌最弱也能战胜齐王最弱（弱对弱必赢）'
+      rounds.push({
+        round: round + 1,
+        t: tWeak,
+        q: qWeak,
+        pick: '最弱对最弱，用最小代价取胜',
+      })
       i++
       k++
     } else {
-      // 否则用最弱去换掉最弱，尽量减少损失
-      chosenT = tWeak
-      chosenQ = qWeak
-      result = compare(chosenT, chosenQ)
-      if (result === 'win') reason = '出现“弱对弱”赢的情况'
-      else if (result === 'draw') reason = '弱对弱战力相等（平）'
-      else reason = '田忌最弱不敌齐王最弱（用弱对弱，避免强马白用）'
+      rounds.push({
+        round: round + 1,
+        t: tWeak,
+        q: qStrong,
+        pick: '无必胜局：最弱对最强，保留强马争后续胜场',
+      })
       i++
-      k++
+      l--
     }
+  }
+  return rounds
+}
 
-    const delta = scoreOf(result)
+function randomPlan(tArr, qArr) {
+  const t = [...tArr]
+  for (let i = t.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[t[i], t[j]] = [t[j], t[i]]
+  }
+  // 按需求：仅打乱田忌顺序，齐王顺序保持输入不变，便于对比策略差异
+  const q = [...qArr]
+  return t.map((tv, i) => ({ round: i + 1, t: tv, q: q[i], pick: '随机匹配' }))
+}
+
+function customPlan(tArr, qArr) {
+  const t = customOrder.value.map((x) => x.power)
+  // 自定义策略同样只调整田忌出场顺序，齐王保持输入顺序
+  const q = [...qArr]
+  return t.map((tv, i) => ({ round: i + 1, t: tv, q: q[i], pick: '用户自定义出场顺序' }))
+}
+
+function enrichRounds(rounds) {
+  let money = 0
+  let win = 0
+  let lose = 0
+  let draw = 0
+  return rounds.map((r) => {
+    const delta = scoreDelta(r.t, r.q)
+    if (delta > 0) win++
+    else if (delta < 0) lose++
+    else draw++
     money += delta
-    steps.push({ round: round + 1, tianji: chosenT, qi: chosenQ, result, delta, reason })
-  }
-
-  return { money, steps }
-}
-
-function randomStrategy(tianjiArr, qiArr) {
-  const tSorted = sortAsc(tianjiArr)
-  const qSorted = sortAsc(qiArr)
-  const tOrder = shuffle(tSorted)
-  const qOrder = qSorted
-  const steps = tOrder.map((tv, idx) => {
-    const qv = qOrder[idx]
-    const result = compare(tv, qv)
-    const delta = scoreOf(result)
     return {
-      round: idx + 1,
-      tianji: tv,
-      qi: qv,
-      result,
+      ...r,
       delta,
-      reason: '随机匹配：按随机顺序与齐王升序马对抗',
+      result: resultText(delta),
+      moneyAfter: money,
+      winAfter: win,
+      loseAfter: lose,
+      drawAfter: draw,
     }
   })
-  const money = steps.reduce((s, x) => s + x.delta, 0)
-  return { money, steps }
 }
 
-function customStrategy(tianjiOrder, qiArr) {
-  const tOrder = [...tianjiOrder]
-  const qOrder = sortAsc(qiArr) // 保持齐王升序，更便于与贪心对比
-  const steps = tOrder.map((tv, idx) => {
-    const qv = qOrder[idx]
-    const result = compare(tv, qv)
-    const delta = scoreOf(result)
-    return { round: idx + 1, tianji: tv, qi: qv, result, delta, reason: '自定义顺序：使用拖拽后的田忌出场顺序' }
-  })
-  const money = steps.reduce((s, x) => s + x.delta, 0)
-  return { money, steps }
+function buildRoundsByStrategy(key) {
+  const ta = [...tianji.value]
+  const qa = [...qi.value]
+  if (!ta.length || ta.length !== qa.length) return []
+  if (key === 'greedy') return enrichRounds(greedyPlan(ta, qa))
+  if (key === 'random') return enrichRounds(randomPlan(ta, qa))
+  return enrichRounds(customPlan(ta, qa))
 }
 
-// ------------------------ UI 状态 ------------------------
+const stepsForGreedy = computed(() => buildRoundsByStrategy('greedy'))
 
-const strategy = ref('greedy') // greedy | random | custom
-
-const playing = ref(false)
-const autoPlay = ref(true)
-const playDelay = ref(700) // ms
-const currentRound = ref(0) // 已播放到第 currentRound 场（0..n）
-const moneyNow = ref(0)
-const currentSteps = ref([])
-
-const matchList = computed(() => currentSteps.value.slice(0, currentRound.value))
-
-const resultPanel = computed(() => {
-  const totalWins = matchList.value.filter((s) => s.result === 'win').length
-  const totalLoses = matchList.value.filter((s) => s.result === 'lose').length
-  const totalDraws = matchList.value.filter((s) => s.result === 'draw').length
-  return { totalWins, totalLoses, totalDraws, money: moneyNow.value }
+const currentRoundData = computed(() => {
+  if (!battleRounds.value.length) return null
+  return battleRounds.value[currentRound.value - 1] ?? null
 })
 
-const strategyResults = reactive({
-  greedy: null,
-  random: null,
-  custom: null,
+const progressPercent = computed(() => {
+  if (!battleRounds.value.length) return 0
+  return Math.round((currentRound.value / battleRounds.value.length) * 100)
 })
 
-const barChartEl = ref(null)
-let barChart = null
+const currentMoney = computed(() => currentRoundData.value?.moneyAfter ?? 0)
+const currentWin = computed(() => currentRoundData.value?.winAfter ?? 0)
+const currentLose = computed(() => currentRoundData.value?.loseAfter ?? 0)
+const currentDraw = computed(() => currentRoundData.value?.drawAfter ?? 0)
 
-const strategiesWithResult = computed(() => {
-  return Object.entries(strategyResults)
-    .filter(([, v]) => v && typeof v.money === 'number')
-    .map(([k, v]) => ({ key: k, money: v.money }))
-})
-
-const chartReady = computed(() => strategiesWithResult.value.length >= 2)
-
-function strategyLabel(key) {
-  if (key === 'greedy') return '贪心'
-  if (key === 'random') return '随机'
-  if (key === 'custom') return '自定义'
-  return key
+/** 本局对阵结果短片（public/videos） */
+const OUTCOME_CLIP = {
+  draw: '/videos/Draw.mp4',
+  qiWin: '/videos/QiWins.mp4',
+  tianjiWin: '/videos/TianjiWins.mp4',
 }
 
-function renderBarChart() {
-  if (!barChartEl.value) return
-  if (!chartReady.value) return
+const roundOutcomeClipSrc = computed(() => {
+  const d = currentRoundData.value?.delta
+  if (d === undefined || currentRoundData.value == null) return ''
+  if (d > 0) return OUTCOME_CLIP.tianjiWin
+  if (d < 0) return OUTCOME_CLIP.qiWin
+  return OUTCOME_CLIP.draw
+})
 
-  const xData = strategiesWithResult.value.map((s) => strategyLabel(s.key))
-  const yData = strategiesWithResult.value.map((s) => s.money)
+const roundOutcomeClipKey = computed(() => {
+  if (!battleStarted.value || !currentRoundData.value) return 'idle'
+  return `r${currentRound.value}-d${currentRoundData.value.delta}`
+})
 
-  if (!barChart) {
-    barChart = echarts.init(barChartEl.value)
+const finishedCurrent = computed(() => battleRounds.value.length > 0 && currentRound.value === battleRounds.value.length)
+
+const compareRows = computed(() => {
+  const entries = Object.keys(compareMoney.value)
+    .filter((k) => compareMoney.value[k] != null)
+    .map((k) => ({ key: k, label: compareLabel[k], money: compareMoney.value[k] }))
+  if (!entries.length) return []
+  const min = Math.min(...entries.map((x) => x.money))
+  const max = Math.max(...entries.map((x) => x.money))
+  const span = Math.max(1, max - min)
+  return entries.map((e) => ({
+    ...e,
+    bar: Math.round(((e.money - min) / span) * 100),
+  }))
+})
+
+function startBattle() {
+  stopAuto()
+  battleRounds.value = buildRoundsByStrategy(strategy.value)
+  battleStarted.value = true
+  currentRound.value = battleRounds.value.length ? 1 : 0
+  updateCompareScoreIfFinished()
+}
+
+function replayBattle() {
+  startBattle()
+}
+
+function nextRound() {
+  if (!battleRounds.value.length) return
+  if (currentRound.value < battleRounds.value.length) currentRound.value++
+  updateCompareScoreIfFinished()
+}
+
+function prevRound() {
+  if (!battleRounds.value.length) return
+  if (currentRound.value > 1) currentRound.value--
+}
+
+function toggleAuto() {
+  if (isAuto.value) {
+    stopAuto()
+    return
   }
-
-  barChart.setOption({
-    tooltip: { trigger: 'axis' },
-    grid: { left: 10, right: 10, top: 30, bottom: 10 },
-    xAxis: {
-      type: 'category',
-      data: xData,
-      axisLabel: { interval: 0 },
-    },
-    yAxis: { type: 'value', axisLabel: { formatter: '{value}' } },
-    series: [
-      {
-        type: 'bar',
-        data: yData,
-        itemStyle: {
-          borderRadius: [10, 10, 0, 0],
-        },
-      },
-    ],
-  })
-}
-
-watch(chartReady, async () => {
-  await nextTick()
-  renderBarChart()
-})
-
-watch(
-  strategiesWithResult,
-  async () => {
-    await nextTick()
-    renderBarChart()
-  },
-  { deep: true }
-)
-
-const greedySteps = computed(() => strategyResults.greedy?.steps ?? [])
-const greedyOrder = computed(() => greedySteps.value.map((s) => s.tianji))
-const selectedGreedyStep = ref(0)
-
-watch(
-  greedySteps,
-  () => {
-    selectedGreedyStep.value = 0
-  },
-  { deep: true }
-)
-
-let timer = null
-onBeforeUnmount(() => {
-  if (timer) window.clearInterval(timer)
-  timer = null
-  destroyCustomSortable()
-  if (barChart) barChart.dispose()
-  barChart = null
-})
-
-function stopPlaying() {
-  if (timer) window.clearInterval(timer)
-  timer = null
-  playing.value = false
-}
-
-function prepareRun() {
-  const n = horsesCount.value
-  const tArr = tianji.value.slice(0, n)
-  const qArr = qi.value.slice(0, n)
-
-  let res
-  if (strategy.value === 'greedy') res = greedyRace(tArr, qArr)
-  else if (strategy.value === 'random') res = randomStrategy(tArr, qArr)
-  else res = customStrategy(tArr, qArr)
-
-  strategyResults[strategy.value] = res
-  currentSteps.value = res.steps
-  currentRound.value = 0
-  moneyNow.value = 0
-}
-
-function tickNext() {
-  if (currentRound.value >= currentSteps.value.length) return false
-  const step = currentSteps.value[currentRound.value]
-  currentRound.value += 1
-  moneyNow.value += step.delta
-  return true
-}
-
-async function start() {
-  stopPlaying()
-  prepareRun()
-  await nextTick()
-
-  playing.value = true
-  if (!autoPlay.value) return
-
-  timer = window.setInterval(() => {
-    const ok = tickNext()
-    if (!ok) {
-      stopPlaying()
+  if (!battleRounds.value.length) startBattle()
+  isAuto.value = true
+  autoTimer = window.setInterval(() => {
+    if (currentRound.value >= battleRounds.value.length) {
+      stopAuto()
+      return
     }
-  }, playDelay.value)
+    nextRound()
+  }, speedMs.value)
 }
 
-function prev() {
-  if (playing.value) stopPlaying()
-  const newRound = Math.max(0, currentRound.value - 1)
-  // 重新计算 moneyNow
-  const list = currentSteps.value.slice(0, newRound)
-  moneyNow.value = list.reduce((s, x) => s + x.delta, 0)
-  currentRound.value = newRound
-}
-
-function nextManual() {
-  if (playing.value) stopPlaying()
-  tickNext()
-}
-
-function replay() {
-  stopPlaying()
-  currentRound.value = 0
-  moneyNow.value = 0
-}
-
-function resultFor(key) {
-  const r = strategyResults[key]
-  if (!r) return null
-  return { money: r.money, steps: r.steps }
-}
-
-// ------------------------ 自定义拖拽 ------------------------
-
-const customListRef = ref(null)
-let sortable = null
-
-function initCustomSortable() {
-  nextTick(() => {
-    if (!customListRef.value) return
-    destroyCustomSortable()
-    sortable = new Sortable(customListRef.value, {
-      animation: 120,
-      ghostClass: 'sortable-ghost',
-      handle: '.drag-handle',
-      onEnd: (evt) => {
-        const from = evt.oldIndex
-        const to = evt.newIndex
-        if (from === to) return
-        const a = [...tianji.value]
-        const [moved] = a.splice(from, 1)
-        a.splice(to, 0, moved)
-        tianji.value = a
-      },
-    })
-  })
-}
-
-function destroyCustomSortable() {
-  if (sortable) sortable.destroy()
-  sortable = null
-}
-
-watch(
-  () => horsesCount.value,
-  () => {
-    nextTick(() => initCustomSortable())
+function stopAuto() {
+  isAuto.value = false
+  if (autoTimer) {
+    window.clearInterval(autoTimer)
+    autoTimer = null
   }
-)
+}
+
+function updateCompareScoreIfFinished() {
+  if (!finishedCurrent.value) return
+  compareMoney.value = {
+    ...compareMoney.value,
+    [strategy.value]: currentMoney.value,
+  }
+}
+
+function resetBattle() {
+  stopAuto()
+  battleStarted.value = false
+  battleRounds.value = []
+  currentRound.value = 0
+}
 </script>
 
 <template>
   <div class="sim">
-    <div class="sim-grid">
-      <section class="panel">
-        <h3 class="panel-title">参数配置</h3>
+    <p class="lead">
+      胜一场 <strong>+200</strong> 银币，负一场 <strong>-200</strong>，平局 <strong>0</strong>。贪心策略下常会出现「田忌最弱马对齐王最强马」的弃子局（该场按战力多为负），但总战力仍可有「田忌 &lt; 齐王」，且整场净银币为正——即田忌最终在赛制上取胜。「随机生成」会自动满足上述教学设定（n≥3）。
+    </p>
 
-        <div class="row">
-          <div class="label">马匹数量</div>
-          <div class="segmented">
-            <button
-              v-for="n in [3, 4, 5]"
-              :key="n"
-              type="button"
-              class="seg-btn"
-              :class="{ active: horsesCount === n }"
-              @click="horsesCount = n"
-            >
-              {{ n }} 匹
-            </button>
-          </div>
-        </div>
+    <div class="controls">
+      <label class="field">
+        <span class="lbl">马匹数量 n（1–{{ sim.maxHorses ?? 5 }}）</span>
+        <input v-model.number="n" type="range" :min="1" :max="sim.maxHorses ?? 5" />
+        <span class="mono">{{ n }}</span>
+      </label>
 
-        <div class="row">
-          <div class="label">田忌马匹战力</div>
-          <div class="horse-list" ref="customListRef">
-            <div v-for="(v, idx) in tianji" :key="'t-' + idx" class="horse-item">
-              <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-              <input
-                class="range"
-                type="range"
-                min="0"
-                max="100"
-                :value="v"
-                @input="tianji[idx] = clamp01to100(($event.target).value)"
-              />
-              <input class="num" type="number" min="0" max="100" v-model.number="tianji[idx]" />
-            </div>
-          </div>
-
-          <div class="hint">拖拽顺序仅在“自定义排列”策略下生效。</div>
-        </div>
-
-        <div class="row">
-          <div class="label">齐王马匹战力</div>
-          <div class="horse-list">
-            <div v-for="(v, idx) in qi" :key="'q-' + idx" class="horse-item">
-              <span class="drag-handle drag-disabled" aria-hidden="true">⋮⋮</span>
-              <input
-                class="range"
-                type="range"
-                min="0"
-                max="100"
-                :value="v"
-                @input="qi[idx] = clamp01to100(($event.target).value)"
-              />
-              <input class="num" type="number" min="0" max="100" v-model.number="qi[idx]" />
-            </div>
-          </div>
-        </div>
-
-        <div class="quick-actions">
-          <button type="button" class="btn" @click="randomizeAll">随机生成</button>
-          <button type="button" class="btn" @click="resetFromClassic">使用经典数据</button>
-          <button type="button" class="btn ghost" @click="replay">重置对战</button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <h3 class="panel-title">策略选择 & 对战演示</h3>
-
-        <div class="row">
-          <div class="label">策略</div>
-          <div class="radio-grid">
-            <label class="radio-card">
-              <input type="radio" value="greedy" v-model="strategy" />
-              <span class="radio-title">贪心算法（最优）</span>
-              <span class="radio-desc">双指针贪心，输出最优出场顺序</span>
-            </label>
-            <label class="radio-card">
-              <input type="radio" value="random" v-model="strategy" />
-              <span class="radio-title">随机匹配</span>
-              <span class="radio-desc">打乱田忌升序后的出场顺序</span>
-            </label>
-            <label class="radio-card">
-              <input type="radio" value="custom" v-model="strategy" />
-              <span class="radio-title">自定义排列</span>
-              <span class="radio-desc">使用拖拽后的田忌顺序</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="label">动画速度</div>
-          <input class="speed" type="range" min="250" max="1200" step="50" v-model.number="playDelay" />
-          <div class="speed-tag">{{ playDelay }} ms/场</div>
-        </div>
-
-        <div class="controls">
-          <label class="check">
-            <input type="checkbox" v-model="autoPlay" />
-            自动播放
-          </label>
-          <button class="btn primary" type="button" :disabled="playing" @click="start">
-            ▶ 开始对战
-          </button>
-          <div class="control-right">
-            <button class="btn" type="button" @click="prev" :disabled="playing || currentRound <= 0">上一场</button>
-            <button class="btn" type="button" @click="nextManual" :disabled="playing || currentRound >= currentSteps.length">
-              下一场
-            </button>
-            <button class="btn ghost" type="button" @click="replay" :disabled="playing">重播</button>
-          </div>
-        </div>
-
-        <div class="arena">
-          <div class="match-header">
-            <div class="arena-title">逐场动画</div>
-            <div class="progress">
-              第 {{ currentRound }} 场 / 共 {{ horsesCount }} 场
-            </div>
-          </div>
-
-          <div class="match-body" v-if="currentRound < currentSteps.length">
-            <div class="horse-track">
-              <div class="horse-chip">田忌</div>
-              <div class="horse-value">
-                🐴 {{ currentSteps[currentRound]?.tianji ?? '-' }}
-              </div>
-            </div>
-            <div class="vs">VS</div>
-            <div class="horse-track">
-              <div class="horse-chip">齐王</div>
-              <div class="horse-value">
-                🐴 {{ currentSteps[currentRound]?.qi ?? '-' }}
-              </div>
-            </div>
-          </div>
-
-          <div class="finished" v-else>
-            <div class="finished-title">对战完成</div>
-          </div>
-
-          <div class="scoreboard">
-            <div class="score-item">银币：<strong>{{ resultPanel.money }}</strong></div>
-            <div class="score-item">胜：{{ resultPanel.totalWins }} </div>
-            <div class="score-item">负：{{ resultPanel.totalLoses }} </div>
-            <div class="score-item">平：{{ resultPanel.totalDraws }} </div>
-          </div>
-
-          <div class="match-list">
-            <div class="match-list-head">本策略已播放场次</div>
-            <div class="match-items">
-              <div v-for="s in matchList" :key="'m-' + s.round" class="match-item">
-                <div class="round-tag">第 {{ s.round }} 场</div>
-                <div class="match-line">
-                  <span class="t-val">田忌 {{ s.tianji }}</span>
-                  <span class="arrow">→</span>
-                  <span class="q-val">齐王 {{ s.qi }}</span>
-                </div>
-                <div class="result" :class="s.result">{{ s.result === 'win' ? '胜' : s.result === 'lose' ? '负' : '平' }}</div>
-                <div class="reason">{{ s.reason }}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <div class="btn-row">
+        <button type="button" class="btn" @click="loadClassic">使用经典数据</button>
+        <button type="button" class="btn secondary" @click="randomPowers">随机生成</button>
+      </div>
     </div>
 
-    <section class="charts" aria-label="对比分析">
-      <div class="charts-head">结果对比</div>
+    <div class="grid-inputs">
+      <label class="field block">
+        <span class="lbl">田忌战力（空格或逗号分隔）</span>
+        <textarea v-model="tianjiInput" class="nums" rows="2" @blur="applyInputs" />
+      </label>
+      <label class="field block">
+        <span class="lbl">齐王战力</span>
+        <textarea v-model="qiInput" class="nums" rows="2" @blur="applyInputs" />
+      </label>
+    </div>
 
-      <div v-if="chartReady" ref="barChartEl" class="bar-chart"></div>
-      <div v-else class="empty-chart">至少完成两个策略对战后，将展示对比柱状图。</div>
-
-      <div v-if="strategyResults.greedy" class="greedy-detail">
-        <div class="detail-block">
-          <div class="detail-title">最优出场顺序展示</div>
-          <div class="order-list">
-            <span v-for="(v, idx) in greedyOrder" :key="'o-' + idx" class="order-pill">
-              {{ v }}
+    <div class="strategy-block">
+      <div class="lbl">策略选择区</div>
+      <div class="strategy-row">
+        <label class="radio"><input v-model="strategy" type="radio" value="greedy" /> 贪心算法（最优）</label>
+        <label class="radio"><input v-model="strategy" type="radio" value="random" /> 随机匹配</label>
+        <label class="radio"><input v-model="strategy" type="radio" value="custom" /> 自定义排列</label>
+      </div>
+      <div v-if="strategy === 'custom'" class="custom-order">
+        <div class="muted">拖拽或上下移动调整田忌出场顺序</div>
+        <div class="order-list">
+          <div
+            v-for="(item, idx) in customOrder"
+            :key="item.id"
+            class="order-item"
+            draggable="true"
+            @dragstart="onDragStart(idx)"
+            @dragover.prevent
+            @drop="onDrop(idx)"
+          >
+            <span class="mono">#{{ idx + 1 }} · {{ item.power }}</span>
+            <span>
+              <button type="button" class="mini-btn" @click="moveCustom(idx, -1)">↑</button>
+              <button type="button" class="mini-btn" @click="moveCustom(idx, 1)">↓</button>
             </span>
           </div>
         </div>
+      </div>
+    </div>
 
-        <div class="detail-block">
-          <div class="detail-title">算法步骤回放</div>
-          <div class="step-list">
-            <button
-              v-for="s in greedySteps"
-              :key="'step-' + s.round"
-              type="button"
-              class="step-item"
-              :class="{ active: s.round - 1 === selectedGreedyStep }"
-              @click="selectedGreedyStep = s.round - 1"
-            >
-              <div class="step-top">
-                <span class="step-round">第 {{ s.round }} 场</span>
-                <span class="step-res" :class="s.result">{{ s.result === 'win' ? '胜' : s.result === 'lose' ? '负' : '平' }}</span>
-              </div>
-              <div class="step-body">
-                田忌 {{ s.tianji }} vs 齐王 {{ s.qi }}
-              </div>
-              <div class="step-reason">{{ s.reason }}</div>
-            </button>
-          </div>
+    <div class="battle-controls">
+      <button type="button" class="btn" @click="startBattle">开始对战</button>
+      <button type="button" class="btn ghost" :disabled="!battleStarted" @click="prevRound">上一场</button>
+      <button type="button" class="btn ghost" :disabled="!battleStarted" @click="nextRound">下一场</button>
+      <button type="button" class="btn ghost" :disabled="!battleStarted" @click="toggleAuto">
+        {{ isAuto ? '停止自动播放' : '自动播放' }}
+      </button>
+      <button type="button" class="btn ghost" :disabled="!battleStarted" @click="replayBattle">重播</button>
+      <label class="speed">
+        速度
+        <select v-model.number="speedMs">
+          <option :value="1200">慢</option>
+          <option :value="900">中</option>
+          <option :value="600">快</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="progress-block">
+      <div class="mono">第 {{ currentRound || 0 }} 场 / 共 {{ battleRounds.length || 0 }} 场</div>
+      <div class="progress-bar">
+        <div class="progress-fill" :style="{ width: `${progressPercent}%` }"></div>
+      </div>
+      <div class="score-board">
+        <span>胜 {{ currentWin }}</span>
+        <span>负 {{ currentLose }}</span>
+        <span>平 {{ currentDraw }}</span>
+        <span class="mono">银币 {{ currentMoney >= 0 ? '+' : '' }}{{ currentMoney }}</span>
+      </div>
+    </div>
+
+    <div class="battle-stage">
+      <template v-if="currentRoundData">
+        <div class="horse-card tianji">
+          <div class="horse-title">田忌</div>
+          <div class="horse-power mono">{{ currentRoundData.t }}</div>
+        </div>
+        <div class="vs">VS</div>
+        <div class="horse-card qi">
+          <div class="horse-title">齐王</div>
+          <div class="horse-power mono">{{ currentRoundData.q }}</div>
+        </div>
+        <div class="battle-result" :class="{ win: currentRoundData.delta > 0, lose: currentRoundData.delta < 0 }">
+          {{ currentRoundData.result }} · {{ currentRoundData.delta > 0 ? '+' : '' }}{{ currentRoundData.delta }}
+        </div>
+      </template>
+      <div v-else class="muted">点击“开始对战”进入逐场动画演示区</div>
+    </div>
+
+    <div v-if="battleStarted && currentRoundData && roundOutcomeClipSrc" class="round-outcome-clip">
+      <div class="lbl">
+        本局结果动画
+        <span class="clip-hint muted">{{
+          currentRoundData.delta > 0 ? '（田忌胜）' : currentRoundData.delta < 0 ? '（齐王胜）' : '（平局）'
+        }}</span>
+      </div>
+      <video
+        :key="roundOutcomeClipKey"
+        class="round-clip-video"
+        :src="roundOutcomeClipSrc"
+        playsinline
+        muted
+        autoplay
+        controls
+        preload="auto"
+      />
+    </div>
+
+    <div class="summary-grid">
+      <div class="block">
+        <div class="lbl">本次策略结果</div>
+        <div class="muted">当前策略：{{ compareLabel[strategy] }}</div>
+        <div class="mono">胜 {{ currentWin }} / 负 {{ currentLose }} / 平 {{ currentDraw }}</div>
+        <div class="mono">总银币：{{ currentMoney >= 0 ? '+' : '' }}{{ currentMoney }}</div>
+        <div v-if="strategy === 'greedy'" class="muted">
+          最优出场顺序：{{ battleRounds.map((x) => x.t).join(' → ') || '-' }}
         </div>
       </div>
-    </section>
 
-    <div class="note">
-      提示：当前“对战演示”已实现贪心/随机/自定义出场顺序与逐场动画。多策略柱状对比与步骤回放增强将在后续完成。
+      <div class="block">
+        <div class="lbl">多策略对比图（至少跑两种策略）</div>
+        <div v-if="compareRows.length >= 2" class="bars">
+          <div v-for="row in compareRows" :key="row.key" class="bar-row">
+            <span class="bar-name">{{ row.label }}</span>
+            <div class="bar-track">
+              <div class="bar-fill" :style="{ width: `${Math.max(8, row.bar)}%` }"></div>
+            </div>
+            <span class="mono bar-val">{{ row.money }}</span>
+          </div>
+        </div>
+        <div v-else class="muted">请先跑完至少两种策略。</div>
+      </div>
+    </div>
+
+    <div class="block">
+      <div class="lbl">算法步骤回放（贪心）</div>
+      <div class="steps">
+        <div v-for="s in stepsForGreedy" :key="s.round" class="step-line">
+          <span class="mono r">第 {{ s.round }} 轮</span>
+          <span>{{ s.pick }}</span>
+          <span class="mono">（{{ s.t }} vs {{ s.q }}，{{ s.result }} {{ s.delta > 0 ? '+' : '' }}{{ s.delta }}）</span>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.sim {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.sim-grid {
-  display: grid;
-  grid-template-columns: 0.95fr 1.05fr;
-  gap: 14px;
-}
-
-@media (max-width: 900px) {
-  .sim-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-.panel {
-  background: rgba(255, 255, 255, 0.65);
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  border-radius: 16px;
-  padding: 14px;
-}
-
-:global(.dark) .panel {
-  background: rgba(22, 23, 29, 0.8);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.panel-title {
-  margin: 0 0 12px;
-  font-size: 18px;
-  color: var(--text-h);
-}
-
-.row {
-  margin-bottom: 14px;
-}
-
-.label {
-  font-weight: 800;
-  color: var(--text-h);
-  margin-bottom: 8px;
-}
-
-.segmented {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.seg-btn {
-  border-radius: 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(255, 255, 255, 0.55);
-  cursor: pointer;
-  font-weight: 800;
-  color: var(--text-h);
-}
-
-:global(.dark) .seg-btn {
-  background: rgba(22, 23, 29, 0.7);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.seg-btn.active {
-  border-color: rgba(245, 166, 35, 0.45);
-  background: rgba(245, 166, 35, 0.12);
-}
-
-.horse-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.horse-item {
-  display: grid;
-  grid-template-columns: 26px 1fr 110px;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(26, 47, 90, 0.05);
-  border: 1px solid rgba(26, 47, 90, 0.1);
-}
-
-:global(.dark) .horse-item {
-  background: rgba(26, 47, 90, 0.08);
-  border-color: rgba(46, 48, 58, 0.9);
-}
-
-.drag-handle {
-  text-align: center;
-  cursor: grab;
-  color: rgba(26, 47, 90, 0.6);
-  font-weight: 900;
-}
-
-.drag-disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-
-.range {
-  width: 100%;
-}
-
-.num {
-  height: 36px;
-  border-radius: 10px;
-  border: 1px solid rgba(229, 228, 231, 1);
-  padding: 0 10px;
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--text-h);
-}
-
-:global(.dark) .num {
-  background: rgba(22, 23, 29, 0.85);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.hint {
-  margin-top: 6px;
-  color: var(--text);
-  font-size: 13px;
-}
-
-.quick-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.btn {
-  height: 38px;
-  padding: 0 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(229, 228, 231, 1);
-  background: rgba(255, 255, 255, 0.7);
-  cursor: pointer;
-  font-weight: 800;
-  color: var(--text-h);
-}
-
-:global(.dark) .btn {
-  background: rgba(22, 23, 29, 0.85);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.btn.primary {
-  background: #1a2f5a;
-  border-color: #1a2f5a;
-  color: white;
-}
-
-.btn.ghost {
-  background: rgba(26, 47, 90, 0.05);
-}
-
-.btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.65;
-}
-
-.radio-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-}
-
-.radio-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  border-radius: 14px;
+.sim { display: flex; flex-direction: column; gap: 14px; }
+.lead { margin: 0; color: var(--text); line-height: 1.75; }
+.lead strong { color: var(--text-h); }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field.block { flex: 1; min-width: 200px; }
+.lbl { font-weight: 800; font-size: 13px; color: var(--text-h); }
+.grid-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 720px) { .grid-inputs { grid-template-columns: 1fr; } }
+.nums { font-family: var(--mono); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-h); resize: vertical; }
+.btn-row, .strategy-row, .battle-controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.btn { border-radius: 12px; border: 1px solid var(--accent-border); background: var(--accent-bg); color: var(--text-h); font-weight: 900; padding: 8px 14px; cursor: pointer; }
+.btn.secondary { background: rgba(26, 47, 90, 0.06); border-color: var(--border-strong); }
+.btn.ghost { background: transparent; font-weight: 800; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.strategy-block, .progress-block, .block { padding: 12px; border-radius: 14px; border: 1px solid var(--border); background: rgba(255,255,255,0.35); }
+:global(.dark) .strategy-block, :global(.dark) .progress-block, :global(.dark) .block { background: rgba(22,23,29,0.55); }
+.radio { font-size: 14px; color: var(--text); display: inline-flex; gap: 6px; align-items: center; }
+.custom-order { margin-top: 8px; }
+.order-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.order-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated); }
+.mini-btn { width: 28px; height: 28px; margin-left: 4px; border-radius: 8px; border: 1px solid var(--border); background: transparent; cursor: pointer; }
+.speed { font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
+.speed select { border-radius: 8px; border: 1px solid var(--border); padding: 4px 6px; }
+.progress-bar { width: 100%; height: 10px; border-radius: 999px; background: rgba(26,47,90,0.1); margin-top: 8px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #f5a623, #1a2f5a); }
+.score-board { margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; color: var(--text); }
+.battle-stage { min-height: 110px; border-radius: 14px; border: 1px dashed var(--border); padding: 12px; display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+.horse-card { border-radius: 12px; border: 1px solid var(--border); padding: 10px; text-align: center; }
+.horse-title { font-weight: 800; color: var(--text-h); }
+.horse-power { margin-top: 4px; font-size: 22px; font-weight: 900; }
+.vs { font-weight: 900; color: var(--text-muted); text-align: center; }
+.battle-result { grid-column: 1 / -1; text-align: center; font-weight: 900; color: var(--text-h); }
+.battle-result.win { color: #15803d; }
+.battle-result.lose { color: #b91c1c; }
+.round-outcome-clip {
   padding: 12px;
-  border: 1px solid rgba(229, 228, 231, 1);
-  background: rgba(255, 255, 255, 0.65);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.35);
 }
-
-:global(.dark) .radio-card {
-  background: rgba(22, 23, 29, 0.85);
-  border-color: rgba(46, 48, 58, 0.95);
+:global(.dark) .round-outcome-clip {
+  background: rgba(22, 23, 29, 0.55);
 }
-
-.radio-card input {
-  margin: 0;
-}
-
-.radio-title {
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.radio-desc {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.speed {
-  width: 100%;
-}
-
-.speed-tag {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--text-h);
-}
-
-.controls {
+.round-outcome-clip .lbl {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-}
-
-.check {
-  display: inline-flex;
-  gap: 8px;
-  align-items: center;
-  font-weight: 800;
-  color: var(--text-h);
-}
-
-.control-right {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.arena {
-  margin-top: 14px;
-  border-top: 1px solid rgba(229, 228, 231, 0.9);
-  padding-top: 14px;
-}
-
-.match-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
   align-items: baseline;
-  margin-bottom: 12px;
-}
-
-.arena-title {
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.progress {
-  font-family: var(--mono);
-  color: var(--text);
-  font-size: 13px;
-}
-
-.match-body {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 18px;
-  padding: 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(26, 47, 90, 0.12);
-  background: rgba(26, 47, 90, 0.05);
-}
-
-.horse-track {
-  display: flex;
-  flex-direction: column;
   gap: 8px;
-  align-items: center;
-}
-
-.horse-chip {
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.horse-value {
-  font-size: 30px;
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.vs {
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.finished-title {
-  padding: 18px;
-  border-radius: 16px;
-  border: 1px dashed rgba(26, 47, 90, 0.25);
-  color: var(--text-h);
-  font-weight: 900;
-  text-align: center;
-}
-
-.scoreboard {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 12px;
-  font-weight: 800;
-  color: var(--text);
-}
-
-.score-item strong {
-  color: var(--text-h);
-}
-
-.match-list {
-  margin-top: 14px;
-}
-
-.match-list-head {
-  font-weight: 900;
-  color: var(--text-h);
   margin-bottom: 10px;
 }
-
-.match-items {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.clip-hint {
+  font-weight: 600;
+  font-size: 12px;
 }
-
-.match-item {
-  border-radius: 14px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(255, 255, 255, 0.55);
-  padding: 12px;
-}
-
-:global(.dark) .match-item {
-  background: rgba(22, 23, 29, 0.85);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.round-tag {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--text-h);
-  margin-bottom: 8px;
-  font-weight: 900;
-}
-
-.match-line {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  font-weight: 800;
-  color: var(--text);
-  margin-bottom: 6px;
-}
-
-.t-val,
-.q-val {
-  color: var(--text-h);
-}
-
-.arrow {
-  opacity: 0.6;
-}
-
-.result {
-  font-weight: 900;
-  margin-bottom: 6px;
-}
-
-.result.win {
-  color: #16a34a;
-}
-
-.result.lose {
-  color: #dc2626;
-}
-
-.result.draw {
-  color: #f59e0b;
-}
-
-.reason {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.note {
-  color: var(--text);
-  font-size: 13px;
-}
-
-.charts {
-  margin-top: 16px;
-  padding-top: 8px;
-}
-
-.charts-head {
-  font-weight: 900;
-  color: var(--text-h);
-  margin-bottom: 10px;
-}
-
-.bar-chart {
-  height: 320px;
+.round-clip-video {
+  display: block;
   width: 100%;
-  background: rgba(26, 47, 90, 0.04);
-  border: 1px solid rgba(26, 47, 90, 0.08);
-  border-radius: 16px;
+  max-height: min(52vw, 320px);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #000;
+  object-fit: contain;
 }
-
-.empty-chart {
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(26, 47, 90, 0.04);
-  border: 1px dashed rgba(26, 47, 90, 0.2);
-  color: var(--text);
-}
-
-.greedy-detail {
-  margin-top: 14px;
-  display: grid;
-  gap: 14px;
-}
-
-.detail-block {
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  border-radius: 16px;
-  padding: 14px;
-}
-
-:global(.dark) .detail-block {
-  background: rgba(22, 23, 29, 0.85);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.detail-title {
-  font-weight: 900;
-  color: var(--text-h);
-  margin-bottom: 10px;
-}
-
-.order-list {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.order-pill {
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: rgba(245, 166, 35, 0.12);
-  border: 1px solid rgba(245, 166, 35, 0.25);
-  font-family: var(--mono);
-  color: var(--text-h);
-  font-weight: 900;
-}
-
-.step-list {
-  display: grid;
-  gap: 10px;
-}
-
-.step-item {
-  text-align: left;
-  border-radius: 14px;
-  border: 1px solid rgba(229, 228, 231, 0.95);
-  background: rgba(255, 255, 255, 0.6);
-  padding: 12px;
-  cursor: pointer;
-}
-
-:global(.dark) .step-item {
-  background: rgba(22, 23, 29, 0.75);
-  border-color: rgba(46, 48, 58, 0.95);
-}
-
-.step-item.active {
-  border-color: rgba(245, 166, 35, 0.45);
-  background: rgba(245, 166, 35, 0.1);
-}
-
-.step-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.step-round {
-  font-family: var(--mono);
-  font-weight: 900;
-  color: var(--text-h);
-}
-
-.step-res {
-  font-family: var(--mono);
-  font-weight: 900;
-}
-
-.step-res.win {
-  color: #16a34a;
-}
-
-.step-res.lose {
-  color: #dc2626;
-}
-
-.step-res.draw {
-  color: #f59e0b;
-}
-
-.step-body {
-  color: var(--text-h);
-  font-weight: 800;
-  margin-bottom: 4px;
-}
-
-.step-reason {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.6;
-}
+.summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 820px) { .summary-grid { grid-template-columns: 1fr; } }
+.bars { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: 92px 1fr auto; gap: 8px; align-items: center; }
+.bar-name { font-size: 12px; color: var(--text-h); }
+.bar-track { height: 10px; border-radius: 999px; background: rgba(26,47,90,0.1); overflow: hidden; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, rgba(245,166,35,.75), rgba(26,47,90,.75)); }
+.bar-val { font-size: 12px; }
+.steps { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.step-line { padding: 10px 12px; border-radius: 14px; border: 1px solid var(--border); background: rgba(255, 255, 255, 0.35); font-size: 14px; }
+:global(.dark) .step-line { background: rgba(22, 23, 29, 0.55); }
+.mono { font-family: var(--mono); }
+.muted { color: var(--text-muted); font-size: 14px; }
+.r { font-weight: 900; margin-right: 8px; }
 </style>
-

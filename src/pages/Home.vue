@@ -1,6 +1,5 @@
 <script setup>
 import CourseCard from '../components/CourseCard.vue'
-import HomeAiAssistant from '../components/HomeAiAssistant.vue'
 import courses from '../data/courses.json'
 
 const recommended = courses[0]
@@ -8,8 +7,6 @@ const recommended = courses[0]
 
 <template>
   <div class="home">
-    <HomeAiAssistant />
-
     <section class="hero">
       <div class="hero-glow" aria-hidden="true" />
       <div class="hero-inner">
@@ -22,16 +19,16 @@ const recommended = courses[0]
             用故事讲透算法，<br /><span class="hero-title-accent">用交互验证直觉</span>
           </h1>
           <p class="hero-desc">
-            策算学堂以微课视频为核心，配套虚拟仿真实验、结构化教学设计、在线练习与 AI
+            策算学堂以微课视频为核心，配套虚拟仿真实验、课件资料、在线练习与 AI
             学习向导，面向已学 C 语言基础的大学生与编程初学者。
           </p>
           <div class="hero-actions">
             <router-link class="btn-primary" to="/courses">浏览课程</router-link>
-            <router-link class="btn-secondary" to="/course/tianji-qiwei">田忌赛马 · 立即体验</router-link>
+            <router-link class="btn-secondary" to="/course/tianji-qiwei/video">田忌赛马 · 立即体验</router-link>
           </div>
           <div class="hero-stats">
             <div class="stat">
-              <span class="stat-num">6</span>
+              <span class="stat-num">5</span>
               <span class="stat-label">大教学模块</span>
             </div>
             <div class="stat">

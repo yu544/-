@@ -1,9 +1,13 @@
 <script setup>
 import { nextTick, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import axios from 'axios'
 
-const expanded = ref(true)
-const mountedPop = ref(true)
+const props = defineProps({
+  forceOpenSignal: { type: Number, default: 0 },
+})
+
+const open = ref(false)
 const input = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
@@ -16,6 +20,11 @@ const messages = ref([
       '你好！我是策算学堂首页 AI 向导，可以介绍站内功能、学习路径或贪心算法入门——输入问题即可。',
   },
 ])
+const route = useRoute()
+
+function isHomeRoute() {
+  return route.name === 'home' || route.path === '/'
+}
 
 watch(
   messages,
@@ -27,14 +36,24 @@ watch(
   { deep: true }
 )
 
-function toggle() {
-  expanded.value = !expanded.value
-}
+// 每次切到首页时，优先弹出 AI 面板
+watch(
+  () => route.fullPath,
+  () => {
+    open.value = isHomeRoute()
+  },
+  { immediate: true },
+)
 
-function onEntered() {
-  window.setTimeout(() => {
-    mountedPop.value = false
-  }, 520)
+watch(
+  () => props.forceOpenSignal,
+  () => {
+    open.value = true
+  },
+)
+
+function toggle() {
+  open.value = !open.value
 }
 
 async function send() {
@@ -77,24 +96,10 @@ function onKeydown(e) {
 </script>
 
 <template>
-  <div
-    class="home-ai"
-    :class="{ 'home-ai--collapsed': !expanded, 'home-ai--enter': mountedPop && expanded }"
-    role="complementary"
-    aria-label="首页 AI 学习向导"
-    @animationend="onEntered"
-  >
-    <button
-      v-if="!expanded"
-      type="button"
-      class="home-ai-tab"
-      aria-expanded="false"
-      @click="toggle"
-    >
-      <span class="home-ai-tab-text">AI</span>
-    </button>
+  <div class="home-ai" role="complementary" aria-label="AI 学习向导">
+    <button type="button" class="home-ai-trigger" :aria-expanded="open" @click="toggle">AI</button>
 
-    <div v-else class="home-ai-panel">
+    <div v-if="open" class="home-ai-panel">
       <div class="home-ai-head">
         <div class="home-ai-title">
           <span class="home-ai-dot" aria-hidden="true" />
@@ -137,74 +142,39 @@ function onKeydown(e) {
 
 <style scoped>
 .home-ai {
-  position: fixed;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 90;
-  display: flex;
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  pointer-events: none;
 }
 
-.home-ai > * {
-  pointer-events: auto;
-}
-
-.home-ai--enter.home-ai {
-  animation: homeAiSlideIn 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-
-@keyframes homeAiSlideIn {
-  from {
-    transform: translate(100%, -50%);
-    opacity: 0.35;
-  }
-  to {
-    transform: translate(0, -50%);
-    opacity: 1;
-  }
-}
-
-.home-ai--collapsed {
-  transform: translateY(-50%);
-}
-
-.home-ai-tab {
-  border: 1px solid rgba(26, 47, 90, 0.22);
-  border-right: none;
-  border-radius: 12px 0 0 12px;
-  background: linear-gradient(180deg, #1a2f5a 0%, #243e6d 100%);
+.home-ai-trigger {
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(26, 47, 90, 0.32);
+  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-soft) 100%);
   color: #fff;
-  padding: 18px 10px;
-  cursor: pointer;
-  box-shadow: -4px 6px 24px rgba(26, 47, 90, 0.25);
   font-weight: 800;
-  letter-spacing: 0.06em;
-}
-
-.home-ai-tab:hover {
-  filter: brightness(1.06);
-}
-
-.home-ai-tab-text {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
   font-size: 14px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
 }
 
 .home-ai-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
   width: min(380px, calc(100vw - 28px));
-  max-height: min(560px, calc(100vh - 120px));
+  max-height: min(560px, calc(100vh - 140px));
   display: flex;
   flex-direction: column;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
-  border-right: none;
-  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   backdrop-filter: blur(16px) saturate(1.15);
   overflow: hidden;
+  z-index: 80;
 }
 
 :global(.dark) .home-ai-panel {
@@ -357,48 +327,5 @@ function onKeydown(e) {
 .home-ai-send:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-}
-
-@media (max-width: 520px) {
-  .home-ai {
-    top: auto;
-    bottom: 0;
-    transform: none;
-    align-items: flex-end;
-  }
-
-  .home-ai--enter.home-ai {
-    animation: homeAiSlideUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-  }
-
-  @keyframes homeAiSlideUp {
-    from {
-      transform: translateY(110%);
-      opacity: 0.35;
-    }
-    to {
-      transform: translateY(0);
-      opacity: 1;
-    }
-  }
-
-  .home-ai-panel {
-    width: 100vw;
-    max-height: min(70vh, 520px);
-    border-radius: 16px 16px 0 0;
-    border: 1px solid rgba(229, 228, 231, 0.95);
-    border-bottom: none;
-  }
-
-  .home-ai-tab {
-    border-radius: 12px 12px 0 0;
-    border: 1px solid rgba(26, 47, 90, 0.22);
-    border-bottom: none;
-    padding: 10px 20px;
-  }
-
-  .home-ai-tab-text {
-    writing-mode: horizontal-tb;
-  }
 }
 </style>

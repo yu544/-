@@ -1,10 +1,13 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import HomeAiAssistant from './HomeAiAssistant.vue'
 
 const route = useRoute()
 const active = computed(() => route.name ?? '')
+const coursesNavActive = computed(() => route.name === 'courses' || String(route.path).startsWith('/course/'))
 const menuOpen = ref(false)
+const aiOpenSignal = ref(0)
 
 watch(
   () => route.fullPath,
@@ -15,6 +18,10 @@ watch(
 
 function toggleMenu() {
   menuOpen.value = !menuOpen.value
+}
+
+function openAiNow() {
+  aiOpenSignal.value++
 }
 </script>
 
@@ -30,9 +37,10 @@ function toggleMenu() {
       </router-link>
 
       <nav class="nav-links" aria-label="主导航">
-        <router-link :class="{ active: active === 'home' }" to="/">首页</router-link>
-        <router-link :class="{ active: active === 'courses' }" to="/courses">微课列表</router-link>
+        <router-link :class="{ active: active === 'home' }" to="/" @click="openAiNow">首页</router-link>
+        <router-link :class="{ active: coursesNavActive }" to="/courses">微课列表</router-link>
         <router-link :class="{ active: active === 'about' }" to="/about">关于我们</router-link>
+        <HomeAiAssistant :force-open-signal="aiOpenSignal" />
       </nav>
 
       <div class="nav-right">
@@ -51,9 +59,10 @@ function toggleMenu() {
     </div>
 
     <div id="mobile-nav" class="mobile-drawer" :class="{ open: menuOpen }">
-      <router-link :class="{ active: active === 'home' }" to="/">首页</router-link>
-      <router-link :class="{ active: active === 'courses' }" to="/courses">微课列表</router-link>
+      <router-link :class="{ active: active === 'home' }" to="/" @click="openAiNow">首页</router-link>
+      <router-link :class="{ active: coursesNavActive }" to="/courses">微课列表</router-link>
       <router-link :class="{ active: active === 'about' }" to="/about">关于我们</router-link>
+      <div class="mobile-ai"><HomeAiAssistant :force-open-signal="aiOpenSignal" /></div>
       <router-link class="mobile-cta" to="/courses">开始学习</router-link>
     </div>
   </header>
@@ -256,6 +265,10 @@ function toggleMenu() {
 .mobile-drawer a.active {
   background: rgba(245, 166, 35, 0.14);
   border: 1px solid rgba(245, 166, 35, 0.3);
+}
+
+.mobile-ai {
+  padding: 6px 4px;
 }
 
 .mobile-drawer.open {
